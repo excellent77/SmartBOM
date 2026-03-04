@@ -1,0 +1,7 @@
+# ignore dirs
+data/
+
+#ignore files
+.csv
+.xlsx
+.dwg
