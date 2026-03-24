@@ -6,14 +6,6 @@ from scipy.spatial import cKDTree
 
 
 
-FLANGE_TOLERANCE = 10
-T_CONNECT_TOLERANCE = 1e-2
-COLLINEAR_TOLERANCE = 1e-2
-
-
-
-
-
 def node_to_line_dist(p: tuple, line_start: tuple, line_end: tuple):
     """
     計算點到線段（Segment）的最短距離。
@@ -73,7 +65,7 @@ class Graph_Data(object):
     處理管網數據並建立拓撲圖的類別。
     """
 
-    def __init__(self, pipes_df:pd.DataFrame, texts_df:pd.DataFrame):
+    def __init__(self, pipes_df:pd.DataFrame, texts_df:pd.DataFrame=None):
         """
         初始化 Graph_Data 物件。
 
@@ -85,13 +77,13 @@ class Graph_Data(object):
         self.texts_data = texts_df
         self.graph = nx.Graph()
 
-    def check_flange(self, flange_data:list, tolerance=FLANGE_TOLERANCE):
+    def check_flange(self, flange_data:list, tolerance:float=10):
         """
         檢查並將法蘭節點整合至圖中。
 
         Args:
             flange_data (list): 法蘭座標列表。
-            tolerance (float, optional): 距離容許誤差。預設為 FLANGE_TOLERANCE。
+            tolerance (float, optional): 距離容許誤差。預設為 10。
         """
         nodes = list(self.graph.nodes())
         nodes_tree = cKDTree(nodes)
@@ -101,13 +93,13 @@ class Graph_Data(object):
             if length < tolerance:
                 self.graph.add_edge(nodes[node_idx], flange, length=0, type='flange')
 
-    def check_T_connection(self, tolerance=T_CONNECT_TOLERANCE):
+    def check_T_connection(self, tolerance=1e-2):
         """
         檢查並建立 T 型連接（三通）。
         若節點位於其他管線上，則建立虛擬連接邊。
 
         Args:
-            tolerance (float, optional): 距離容許誤差。預設為 T_CONNECT_TOLERANCE。
+            tolerance (float, optional): 距離容許誤差。預設為 1e-2。
         """
         edges = [edge for edge in self.graph.edges(data=True) if edge[2]!=0]
         for edge in edges:
@@ -131,12 +123,13 @@ class Graph_Data(object):
                     else:
                         self.graph.add_edge(e1, s2, length=0, type='virtual_connection')
     
-    def check_collinear_extension(self, tolerance=COLLINEAR_TOLERANCE):
+    def check_collinear_extension(self, dist_tolerance=100, tolerance=1e-2):
         """
         檢查並延伸共線的懸空端點，修復斷開的管線連接。
 
         Args:
-            tolerance (float, optional): 共線判定的容許誤差。預設為 COLLINEAR_TOLERANCE。
+            dist_tolerance (float, optional): 雙點間可接合的容許距離。預設為 100。
+            tolerance (float, optional): 共線判定的容許誤差。預設為 1e-2。
         """
         while True:
             dangling_nodes = [node for node, degree in self.graph.degree() if degree == 1]
@@ -163,52 +156,60 @@ class Graph_Data(object):
                                 min_dist = dist_u_w
                                 closest_node = w
                 
-                if closest_node and min_dist<100 and not self.graph.has_edge(u, closest_node):
+                if closest_node and min_dist<dist_tolerance and not self.graph.has_edge(u, closest_node):
                     self.graph.add_edge(u, closest_node, length=0, type='virtual_extension')
                     new_connections_found = True
             
             if not new_connections_found:
                 break
     
-    def build_graph(self):
+    def build_graph(self, slope_tolerance:float=0.98, dist_tolerance:float=5):
         """
         根據輸入的管線數據與文字標註，建立管網拓撲圖。
         計算文字標註與管線的關聯，以賦予管線長度屬性。
+
+        Args:
+            slope_tolerance (float, optional): 斜率相同判定的容許誤差。預設為 0.98。
+            dist_tolerance (float, optional): 文字到線之間可接合的容許距離。預設為 5。
 
         Returns:
             nx.Graph: 建立完成的 NetworkX 圖物件。
         """
         pipe_lengths = {}
-
-        print("🕸️ 正在建立管網空間拓撲圖...")
-        for _, text_row in self.texts_data.iterrows():
-            tx, ty = text_row['位置 X'], text_row['位置 Y']
-            
-            angle_rad = math.radians(text_row['旋轉'])
-            
-            tv = np.array([math.cos(angle_rad), math.sin(angle_rad)])
-            
-            best_dist = float('inf')
-            best_comp_idx = -1
-            
-            for idx, row in self.pipes_data.iterrows():
-                u = (row['起點 X'], row['起點 Y'])
-                v = (row['終點 X'], row['終點 Y'])
-                dx, dy = v[0] - u[0], v[1] - u[1]
-                length = math.hypot(dx, dy)
+        if self.texts_data is not None:
+            print("正在配對管線長度...")
+            for _, text_row in self.texts_data.iterrows():
+                tx, ty = text_row['位置 X'], text_row['位置 Y']
                 
-                ev = np.array([dx / length, dy / length])
+                angle_rad = math.radians(text_row['旋轉'])
                 
-                if abs(np.dot(tv, ev)) > 0.98:
-                    dist = node_to_line_dist((tx, ty), u, v)
+                tv = np.array([math.cos(angle_rad), math.sin(angle_rad)])
+                
+                best_dist = float('inf')
+                best_comp_idx = -1
+                
+                for idx, row in self.pipes_data.iterrows():
+                    u = (row['起點 X'], row['起點 Y'])
+                    v = (row['終點 X'], row['終點 Y'])
+                    dx, dy = v[0] - u[0], v[1] - u[1]
+                    length = math.hypot(dx, dy)
                     
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_comp_idx = idx
-            
-            if best_comp_idx != -1 and best_dist < 10:
-                pipe_lengths[best_comp_idx] = pipe_lengths.get(best_comp_idx, 0) + text_row['值']
-
+                    ev = np.array([dx / length, dy / length])
+                    
+                    if abs(np.dot(tv, ev)) > slope_tolerance:
+                        dist = node_to_line_dist((tx, ty), u, v)
+                        
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_comp_idx = idx
+                
+                if best_comp_idx != -1 and best_dist < dist_tolerance:
+                    try:
+                        val = float(text_row['值'])
+                        pipe_lengths[best_comp_idx] = pipe_lengths.get(best_comp_idx, 0) + val
+                    except (ValueError, TypeError):
+                        pass
+        
         for idx, row in self.pipes_data.iterrows():
             p1 = (row['起點 X'], row['起點 Y'])
             p2 = (row['終點 X'], row['終點 Y'])
