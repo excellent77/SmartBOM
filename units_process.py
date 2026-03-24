@@ -2,6 +2,7 @@ import random
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+from scipy.spatial import cKDTree
 
 from graph_process import Graph_Data
 
@@ -64,11 +65,27 @@ def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5")
 
 def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
     value = check_block(df, name)
-    return value if value else process_df_data(
+    if value:
+        return value
+    
+    hose_df = process_df_data(
         df,
-        columns_name=['計數'],
-        conditions=[('出圖型式', [color])]
-    )['計數'].sum()
+        columns_name=['中心點 X', '中心點 Y'],
+        conditions=[('出圖型式', [color]), ('名稱', ['弧'])]
+    )
+
+    if hose_df.empty:
+        return 0
+
+    points = list(zip(hose_df['中心點 X'], hose_df['中心點 Y']))
+    tree = cKDTree(points)
+    pairs = tree.query_pairs(r=5)
+    
+    graph = nx.Graph()
+    graph.add_nodes_from(range(len(points)))
+    graph.add_edges_from(pairs)
+    
+    return nx.number_connected_components(graph)
 
 def calculate_ball_value(df:pd.DataFrame, name:str='ball_value', color:str="顏色_181"):
     value = check_block(df, name)

@@ -9,7 +9,8 @@ from units_process import calculate_line, generate_graph_report, generate_compon
 
 if __name__ == "__main__":
 
-    file_name = "/home/excellent/SmartBOM/data/ISO圖_N_BGAS_5001_SPTS_V2.csv"
+    file_name = "/home/excellent/SmartBOM/data/單線圖_N_BGAS_LP.csv"
+    "/home/excellent/SmartBOM/data/ISO圖_N_BGAS_5001_SPTS_V2.csv"
 
     df = pd.read_csv(file_name, engine='python')
 
