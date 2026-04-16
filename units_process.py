@@ -280,34 +280,48 @@ def visualize_graph_components(G:nx.Graph, highlight_points:list=None):
 
     Args:
         G (nx.Graph): NetworkX 圖物件。
-        components (list): 連通分群列表，用於區分不同顏色的子圖。
         highlight_points (list, optional): 需要特別標示的點座標列表 [(x, y), ...]。
     """
-    plt.figure(figsize=(16, 9))
+    fig, ax = plt.subplots(figsize=(16, 9))
     pos = {node: (node[0], node[1]) for node in G.nodes()}
 
-    components = list(nx.connected_components(G))
-    print(f"將 {len(components)} 個分群繪製到圖表上...")
-    for component in components:
+    # 優先檢查邊屬性中的 block_id，若無則使用連通分群作為預設分群方式
+    edge_blocks = nx.get_edge_attributes(G, 'block_id')
+    
+    if edge_blocks:
+        # 根據 block_id 將邊分組
+        blocks = {}
+        for (u, v), b_id in edge_blocks.items():
+            blocks.setdefault(b_id, []).append((u, v))
+        components_edges = list(blocks.values())
+    else:
+        components = list(nx.connected_components(G))
+        components_edges = [list(G.subgraph(c).edges()) for c in components]
+
+    print(f"將 {len(components_edges)} 個區塊繪製到圖表上...")
+    for edges in components_edges:
         color = (random.random(), random.random(), random.random())
-        subgraph = G.subgraph(component)
-        nx.draw_networkx(subgraph, pos=pos, with_labels=False, node_color=[color], node_size=15, edge_color=color, width=1.5)
+        nodes = set([n for e in edges for n in e])
         
-        edge_labels = nx.get_edge_attributes(subgraph, 'length')
-        formatted_edge_labels = {k: f"{v:.0f}" for k, v in edge_labels.items() if v > 0}
-        nx.draw_networkx_edge_labels(subgraph, pos=pos, edge_labels=formatted_edge_labels, font_size=8, font_color=color)
+        # 繪製節點與邊，明確指定繪圖軸為 ax
+        nx.draw_networkx_nodes(G, pos=pos, nodelist=list(nodes), node_color=[color], node_size=15, ax=ax)
+        nx.draw_networkx_edges(G, pos=pos, edgelist=edges, edge_color=color, width=1.5, ax=ax)
+
+        # 標註線段長度標籤
+        edge_labels = { (u, v): f"{G[u][v].get('length', 0):.0f}" for u, v in edges if G[u][v].get('length', 0) > 0 }
+        nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=edge_labels, font_size=8, font_color=color, ax=ax)
 
     # 繪製高亮點 (例如角點)
     if highlight_points:
         hx = [p[0] for p in highlight_points]
-        hy = [p[1] for p in highlight_points] # 同樣需要反轉 Y 軸以匹配繪圖座標
-        plt.scatter(hx, hy, color='red', s=50, marker='o', label='Highlighted Points', edgecolors='black', zorder=10)
-        plt.legend()
+        hy = [p[1] for p in highlight_points]
+        ax.scatter(hx, hy, color='red', s=50, marker='o', label='Highlighted Points', edgecolors='black', zorder=10)
+        ax.legend()
 
-    plt.title(f"Visualized Connected Components({len(components)} independent systems)")
-    plt.axis('equal')
-    plt.grid(True)
-    plt.show()
+    ax.set_title(f"Visualized Systems (Total Blocks: {len(components_edges)})")
+    ax.set_aspect('equal')
+    ax.grid(True)
+    return fig
 
 def generate_component_report(df: pd.DataFrame, report_items: list):
     """
