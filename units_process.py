@@ -1,4 +1,5 @@
 import random
+import numpy as np
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -202,8 +203,44 @@ def calculate_line(df:pd.DataFrame, color:str="顏色_30"):
     graph.check_collinear_extension()
     return graph.graph
 
+def find_corner_points(graph: nx.Graph, slope_tolerance: float = 0.98):
+        """
+        找出管網中的所有轉角點（角點）。
+        邏輯：若一個節點連接兩條線（Degree 為 2），且這兩條線不平行（共線），則該點為轉角點。
 
-def generate_graph_report(graph:nx.Graph, connected_components:list):
+        Args:
+            slope_tolerance (float, optional): 判定平行的斜率容許值（dot product 絕對值）。
+                                             值越接近 1 代表判定平行越嚴格。預設為 0.98。
+
+        Returns:
+            list: 轉角點的座標列表 [(x, y), ...]。
+        """
+        corners = []
+        for node, degree in graph.degree():
+            if degree >= 2:
+                neighbors = list(graph.neighbors(node))
+                permutations = []
+                for i in range(len(neighbors)):
+                    for j in range(i+1, len(neighbors)):
+                        permutations.append((i, j))
+
+                for i, j in permutations:
+                    v1, v2 = neighbors[i], neighbors[j]
+                    
+                    # 計算從該節點出發的兩個向量
+                    vec1 = np.array([v1[0] - node[0], v1[1] - node[1]])
+                    vec2 = np.array([v2[0] - node[0], v2[1] - node[1]])
+                    
+                    n1, n2 = np.linalg.norm(vec1), np.linalg.norm(vec2)
+                    if n1 > 0 and n2 > 0:
+                        # 計算正規化點積的絕對值，若小於容許值則視為轉角
+                        dot_product_abs = abs(np.dot(vec1 / n1, vec2 / n2))
+                        if dot_product_abs < slope_tolerance:
+                            corners.append(node)
+                            break
+        return corners
+
+def generate_graph_report(graph:nx.Graph):
     """
     生成管網連通分群的 BOM 報告並輸出至控制台。
 
@@ -211,6 +248,7 @@ def generate_graph_report(graph:nx.Graph, connected_components:list):
         graph (nx.Graph): NetworkX 圖物件，包含管網拓撲與邊屬性。
         connected_components (list): 連通分群列表，每個元素為一組節點集合。
     """
+    connected_components = list(nx.connected_components(graph))
     print(f"✅ 發現 {len(connected_components)} 個獨立的管網連通分群。")
 
     bom_records = []
@@ -236,19 +274,21 @@ def generate_graph_report(graph:nx.Graph, connected_components:list):
     print(final_table.to_markdown(index=False))
 
 
-def visualize_graph_components(G:nx.Graph, components:list):
+def visualize_graph_components(G:nx.Graph, highlight_points:list=None):
     """
     使用 Matplotlib 視覺化管網的連通分群。
 
     Args:
         G (nx.Graph): NetworkX 圖物件。
         components (list): 連通分群列表，用於區分不同顏色的子圖。
+        highlight_points (list, optional): 需要特別標示的點座標列表 [(x, y), ...]。
     """
     plt.figure(figsize=(16, 9))
-    pos = {node: (node[0], -node[1]) for node in G.nodes()}
-    
+    pos = {node: (node[0], node[1]) for node in G.nodes()}
+
+    components = list(nx.connected_components(G))
     print(f"將 {len(components)} 個分群繪製到圖表上...")
-    for i, component in enumerate(components):
+    for component in components:
         color = (random.random(), random.random(), random.random())
         subgraph = G.subgraph(component)
         nx.draw_networkx(subgraph, pos=pos, with_labels=False, node_color=[color], node_size=15, edge_color=color, width=1.5)
@@ -256,6 +296,13 @@ def visualize_graph_components(G:nx.Graph, components:list):
         edge_labels = nx.get_edge_attributes(subgraph, 'length')
         formatted_edge_labels = {k: f"{v:.0f}" for k, v in edge_labels.items() if v > 0}
         nx.draw_networkx_edge_labels(subgraph, pos=pos, edge_labels=formatted_edge_labels, font_size=8, font_color=color)
+
+    # 繪製高亮點 (例如角點)
+    if highlight_points:
+        hx = [p[0] for p in highlight_points]
+        hy = [p[1] for p in highlight_points] # 同樣需要反轉 Y 軸以匹配繪圖座標
+        plt.scatter(hx, hy, color='red', s=50, marker='o', label='Highlighted Points', edgecolors='black', zorder=10)
+        plt.legend()
 
     plt.title(f"Visualized Connected Components({len(components)} independent systems)")
     plt.axis('equal')
@@ -311,8 +358,7 @@ def generate_component_report(df: pd.DataFrame, report_items: list):
 if __name__ == "__main__":
     file_name = "/home/excellent/SmartBOM/data/ISO圖_N_BGAS_5001_SPTS_V2.csv"
     df = pd.read_csv(file_name, engine='python')
-    graph = calculate_line(df)
-    connected_components = list(nx.connected_components(graph))
-    generate_graph_report(graph, connected_components)
+    graph = calculate_line(df, color='ByLayer')
+    generate_graph_report(graph)
     generate_component_report(df, ["Reducer", "Hose", "Ball Valve", "Check Valve (CV)", "Diaphragm Valve", "Plate", "VCR"])
-    visualize_graph_components(graph, connected_components)
+    visualize_graph_components(graph)

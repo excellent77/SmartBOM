@@ -163,7 +163,7 @@ class Graph_Data(object):
             if not new_connections_found:
                 break
     
-    def build_graph(self, slope_tolerance:float=0.98, dist_tolerance:float=5):
+    def build_graph(self, slope_tolerance:float=0.9, dist_tolerance:float=10):
         """
         根據輸入的管線數據與文字標註，建立管網拓撲圖。
         計算文字標註與管線的關聯，以賦予管線長度屬性。
@@ -216,4 +216,3 @@ class Graph_Data(object):
             self.graph.add_edge(p1, p2, length=pipe_lengths.get(idx, 0), line_id=idx)
 
         return self.graph
-    
