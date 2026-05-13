@@ -84,6 +84,9 @@ class Graph_Data(object):
         Args:
             flange_data (list): 法蘭座標列表。
             tolerance (float, optional): 距離容許誤差。預設為 10。
+
+        Returns:
+            None
         """
         nodes = list(self.graph.nodes())
         nodes_tree = cKDTree(nodes)
@@ -100,6 +103,9 @@ class Graph_Data(object):
 
         Args:
             tolerance (float, optional): 距離容許誤差。預設為 1e-2。
+
+        Returns:
+            None
         """
         edges = [edge for edge in self.graph.edges(data=True) if edge[2]!=0]
         for edge in edges:
@@ -130,6 +136,9 @@ class Graph_Data(object):
         Args:
             dist_tolerance (float, optional): 雙點間可接合的容許距離。預設為 100。
             tolerance (float, optional): 共線判定的容許誤差。預設為 1e-2。
+
+        Returns:
+            None
         """
         while True:
             dangling_nodes = [node for node, degree in self.graph.degree() if degree == 1]
@@ -207,7 +216,7 @@ class Graph_Data(object):
                     try:
                         val = float(text_row['值'])
                         pipe_lengths[best_comp_idx] = pipe_lengths.get(best_comp_idx, 0) + val
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, KeyError):
                         pass
         
         for idx, row in self.pipes_data.iterrows():

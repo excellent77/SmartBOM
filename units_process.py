@@ -31,7 +31,15 @@ def process_df_data(
             raise ValueError(f"Column '{name}' not found in the DataFrame.")
         processed_df = processed_df[processed_df[name].isin(key_word)]
     
-    processed_df = processed_df[columns_name]
+    # 檢查並篩選存在於 DataFrame 中的欄位，若不存在則印出警告並繼續執行
+    valid_cols = []
+    for col in columns_name:
+        if col in processed_df.columns:
+            valid_cols.append(col)
+        else:
+            print(f"Warning: Column '{col}' not found in the DataFrame.")
+
+    processed_df = processed_df[valid_cols]
     
     def convert_safe(x):
         try:
@@ -39,14 +47,24 @@ def process_df_data(
         except (ValueError, TypeError):
             return x
 
-    for col in columns_name:
+    for col in valid_cols:
         processed_df[col] = processed_df[col].apply(convert_safe)
     
-    processed_df.dropna(subset=columns_name, inplace=True)
+    processed_df.dropna(subset=valid_cols, inplace=True)
 
     return processed_df
 
 def check_block(df:pd.DataFrame, name:str):
+    """
+    檢查資料中是否包含特定名稱的圖塊 (Block)，並統計其數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str): 欲搜尋的圖塊名稱關鍵字（不分大小寫）。
+
+    Returns:
+        float or bool: 若找到對應圖塊則回傳數量總和，否則回傳 False。
+    """
     processed_df = df.copy()
     categories = processed_df['名稱'].unique()
     for value in categories:
@@ -55,8 +73,151 @@ def check_block(df:pd.DataFrame, name:str):
             return processed_df[processed_df['名稱']==value]['計數'].sum()
     return False
 
+def calculate_ball_value(df:pd.DataFrame, name:str='ball_value', color:str="顏色_181"):
+    """
+    計算球閥 (Ball Valve) 的數量。
+    邏輯：優先查找圖塊名稱，若無則篩選指定顏色中的圓形或橢圓形。
 
-def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5"):
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'ball_value'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_181"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['圓', '橢圓'])]
+        return df['計數'].sum()
+
+def calculate_dia_valve(df:pd.DataFrame, name:str='dia valve', color:str="顏色_3"):
+    """
+    計算隔膜閥 (Diaphragm Valve) 的數量。
+    邏輯：透過顏色過濾線段，建立圖形結構後計算連通分群。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'dia valve'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_3"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
+            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+        )
+        graph = Graph_Data(df)
+        graph.build_graph()
+        connected_components = list(nx.connected_components(graph.graph))
+        components = []
+        for component in connected_components:
+            subgraph = graph.graph.subgraph(component)
+            if len(components) > 0 and len(subgraph.nodes) < len(components[-1]):
+                continue
+            while len(components) > 0 and len(subgraph.nodes) > len(components[-1]):
+                components.pop()
+            components.append(subgraph.nodes)
+            
+        return len(components)
+    
+def calculate_CV(df:pd.DataFrame, name:str='cv', color:str="顏色_212"):
+    """
+    計算止回閥 (Check Valve) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'cv'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_212"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['圓', '橢圓'])]
+        return df['計數'].sum()
+    
+def calculate_Regulagtor(df:pd.DataFrame, name:str='regulator', color:str="顏色_6"):
+    """
+    計算壓力調節閥 (Regulator) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'regulator'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_6"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['弧'])]
+        return df['計數'].sum()
+    
+def calculate_3P_Regulagtor(df:pd.DataFrame, name:str='3p_regulator', color:str="顏色_140"):
+    """
+    計算 3P 調節閥 (3P Regulator) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 '3p_regulator'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_140"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['弧'])]
+        return df['計數'].sum()
+    
+def calculate_Tee(df:pd.DataFrame, name:str='Tee', color:str="顏色_134"):
+    """
+    計算三通 (Tee) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Tee'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_134"。
+
+    Returns:
+        int: 計算出的數量。
+    """
     value = check_block(df, name)
     return value if value else process_df_data(
         df,
@@ -64,7 +225,343 @@ def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5")
         conditions=[('出圖型式', [color])]
     )['計數'].sum()
 
+def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5"):
+    """
+    計算大小頭 (Reducer) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'reducer'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_5"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    return value if value else process_df_data(
+        df,
+        columns_name=['計數'],
+        conditions=[('出圖型式', [color])]
+    )['計數'].sum()
+
+def calculate_ELBOW(df:pd.DataFrame, name:str='elbow', color:str="顏色_16"):
+    """
+    計算彎頭 (Elbow) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'elbow'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_16"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    return value if value else process_df_data(
+        df,
+        columns_name=['計數'],
+        conditions=[('出圖型式', [color])]
+    )['計數'].sum()
+
+def calculate_NUT_F(df:pd.DataFrame, name:str='NUT(F)', color:str="顏色_1"):
+    """
+    計算螺帽(母) (NUT F) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'NUT(F)'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_1"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
+            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+        )
+        graph = Graph_Data(df)
+        graph.build_graph()
+        connected_components = list(nx.connected_components(graph.graph))
+        components = []
+        for component in connected_components:
+            subgraph = graph.graph.subgraph(component)
+            if len(components) > 0 and len(subgraph.nodes) < len(components[-1]):
+                continue
+            while len(components) > 0 and len(subgraph.nodes) > len(components[-1]):
+                components.pop()
+            components.append(subgraph.nodes)
+
+        return len(components)
+    
+def calculate_NUT_M(df:pd.DataFrame, name:str='NUT(M)', color:str="顏色_8"):
+    """
+    計算螺帽(公) (NUT M) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'NUT(M)'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_8"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
+            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+        )
+        graph = Graph_Data(df)
+        graph.build_graph()
+        connected_components = list(nx.connected_components(graph.graph))
+        components = []
+        for component in connected_components:
+            subgraph = graph.graph.subgraph(component)
+            if len(components) > 0 and len(subgraph.nodes) < len(components[-1]):
+                continue
+            while len(components) > 0 and len(subgraph.nodes) > len(components[-1]):
+                components.pop()
+            components.append(subgraph.nodes)
+
+        return len(components)
+    
+def calculate_S_Gland(df:pd.DataFrame, name:str='S Gland', color:str="顏色_142"):
+    """
+    計算 S Gland 的數量（通常一組由三個聚合線組成）。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'S Gland'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_142"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()/3
+    
+def calculate_L_Gland(df:pd.DataFrame, name:str='L Gland', color:str="顏色_11"):
+    """
+    計算 L Gland 的數量（通常一組由三個聚合線組成）。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'L Gland'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_11"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()/3
+    
+def calculate_GASKET(df:pd.DataFrame, name:str='GASKET', color:str="顏色_165"):
+    """
+    計算墊片 (Gasket) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'GASKET'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_165"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()
+    
+def calculate_VCR_Tee(df:pd.DataFrame, name:str='VCR Tee', color:str="顏色_7"):
+    """
+    計算 VCR 三通的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'VCR Tee'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_7"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['填充線'])]
+        return df['計數'].sum()
+
+def calculate_Union_R_Tee(df:pd.DataFrame, name:str='Union R.Tee', color:str="顏色_171"):
+    """
+    計算 Union R.Tee 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Union R.Tee'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_171"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['填充線'])]
+        return df['計數'].sum()
+    
+def calculate_Union_Tee(df:pd.DataFrame, name:str='Union Tee', color:str="顏色_241"):
+    """
+    計算 Union Tee 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Union Tee'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_241"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()
+    
+def calculate_Gauge(df:pd.DataFrame, name:str='Gauge', color:str="顏色_40"):
+    """
+    計算壓力表 (Gauge) 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Gauge'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_40"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['圓'])]
+        return df['計數'].sum()
+
+def calculate_Union(df:pd.DataFrame, name:str='Union', color:str="顏色_67"):
+    """
+    計算 Union 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Union'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_67"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()
+
+def calculate_Reducer_Union(df:pd.DataFrame, name:str='Reducer Union', color:str="顏色_211"):
+    """
+    計算 Reducer Union 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'Reducer Union'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_211"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()
+
 def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
+    """
+    計算軟管 (Hose) 的數量。
+    邏輯：透過顏色過濾弧線中心點，並利用空間聚類 (cKDTree) 辨識同一元件。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'hose'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_4"。
+
+    Returns:
+        int: 計算出的數量。
+    """
     value = check_block(df, name)
     if value:
         return value
@@ -88,57 +585,7 @@ def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
     
     return nx.number_connected_components(graph)
 
-def calculate_ball_value(df:pd.DataFrame, name:str='ball_value', color:str="顏色_181"):
-    value = check_block(df, name)
-    if value:
-        return value
-    else:
-        df = process_df_data(
-            df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
-        )
-        df = df[df['名稱'].isin(['圓', '橢圓'])]
-        return df['計數'].sum()
-
-def calculate_CV(df:pd.DataFrame, name:str='cv', color:str="顏色_6"):
-    value = check_block(df, name)
-    if value:
-        return value
-    else:
-        df = process_df_data(
-            df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
-        )
-        df = df[df['名稱'].isin(['圓', '橢圓'])]
-        return df['計數'].sum()
-
-def calculate_dia_valve(df:pd.DataFrame, name:str='dia valve', color:str="顏色_3"):
-    value = check_block(df, name)
-    if value:
-        return value
-    else:
-        df = process_df_data(
-            df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
-        )
-        graph = Graph_Data(df)
-        graph.build_graph()
-        connected_components = list(nx.connected_components(graph.graph))
-        components = []
-        for component in connected_components:
-            subgraph = graph.graph.subgraph(component)
-            if len(components) > 0 and len(subgraph.nodes) < len(components[-1]):
-                continue
-            while len(components) > 0 and len(subgraph.nodes) > len(components[-1]):
-                components.pop()
-            components.append(subgraph.nodes)
-            
-        return len(components)
-
-def calculate_plate(df:pd.DataFrame, name:str='plate', color:str="顏色_40"):
+'''def calculate_Gauge(df:pd.DataFrame, name:str='Gauge', color:str="顏色_40"):
     value = check_block(df, name)
     if value:
         return value
@@ -160,33 +607,19 @@ def calculate_plate(df:pd.DataFrame, name:str='plate', color:str="顏色_40"):
                 components.pop()
             components.append(subgraph.nodes)
 
-        return len(components)
-
-def calculate_VCR(df:pd.DataFrame, name:str='vcr', color:str="顏色_1"):
-    value = check_block(df, name)
-    if value:
-        return value
-    else:
-        df = process_df_data(
-            df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
-        )
-        graph = Graph_Data(df)
-        graph.build_graph()
-        connected_components = list(nx.connected_components(graph.graph))
-        components = []
-        for component in connected_components:
-            subgraph = graph.graph.subgraph(component)
-            if len(components) > 0 and len(subgraph.nodes) < len(components[-1]):
-                continue
-            while len(components) > 0 and len(subgraph.nodes) > len(components[-1]):
-                components.pop()
-            components.append(subgraph.nodes)
-
-        return len(components)
+        return len(components)'''
 
 def calculate_line(df:pd.DataFrame, color:str="顏色_30"):
+    """
+    建立管網拓撲圖，包含管線幾何處理、長度標註配對與連接修復。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        color (str, optional): 代表管線的顏色標籤。預設為 "顏色_30"。
+
+    Returns:
+        nx.Graph: 構建完成並經過連通性修復後的 NetworkX 圖物件。
+    """
     lines_df = process_df_data(
         df,
         columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
@@ -247,6 +680,9 @@ def generate_graph_report(graph:nx.Graph):
     Args:
         graph (nx.Graph): NetworkX 圖物件，包含管網拓撲與邊屬性。
         connected_components (list): 連通分群列表，每個元素為一組節點集合。
+
+    Returns:
+        None
     """
     connected_components = list(nx.connected_components(graph))
     print(f"✅ 發現 {len(connected_components)} 個獨立的管網連通分群。")
@@ -281,6 +717,9 @@ def visualize_graph_components(G:nx.Graph, highlight_points:list=None):
     Args:
         G (nx.Graph): NetworkX 圖物件。
         highlight_points (list, optional): 需要特別標示的點座標列表 [(x, y), ...]。
+
+    Returns:
+        matplotlib.figure.Figure: 繪製完成的管網視覺化圖表物件。
     """
     fig, ax = plt.subplots(figsize=(16, 9))
     pos = {node: (node[0], node[1]) for node in G.nodes()}
@@ -336,13 +775,26 @@ def generate_component_report(df: pd.DataFrame, report_items: list):
     """
 
     report_dict = {
-        "Reducer": calculate_reducer,
-        "Hose": calculate_hose,
         "Ball Valve": calculate_ball_value,
-        "Check Valve (CV)": calculate_CV,
         "Diaphragm Valve": calculate_dia_valve,
-        "Plate": calculate_plate,
-        "VCR": calculate_VCR,
+        "Check Valve (CV)": calculate_CV,
+        "Regulagtor": calculate_Regulagtor,
+        "3P Regulagtor": calculate_3P_Regulagtor,
+        "Tee": calculate_Tee,
+        "Reducer": calculate_reducer,
+        "ELBOW": calculate_ELBOW,
+        "NUT(F)": calculate_NUT_F,
+        "NUT(M)": calculate_NUT_M,
+        "S Gland": calculate_S_Gland,
+        "L Gland": calculate_L_Gland,
+        "GASKET": calculate_GASKET,
+        "VCR Tee": calculate_VCR_Tee,
+        "Union R.Tee": calculate_Union_R_Tee,
+        "Union Tee": calculate_Union_Tee,
+        "Gauge": calculate_Gauge,
+        "Union": calculate_Union,
+        "Reducer Union": calculate_Reducer_Union,
+        "Hose": calculate_hose,
     }
 
     results = []
@@ -368,11 +820,86 @@ def generate_component_report(df: pd.DataFrame, report_items: list):
     
     return report_df
 
+def export_to_csv(
+        graph: nx.Graph,
+        component_df: pd.DataFrame,
+        corner_points: list,
+        line_path: str = "lines_report.csv",
+        component_path: str = "components_report.csv",
+        download:bool = True
+    ):
+    """
+    將管線資料與元件統計匯出為兩個 CSV 檔案。
+
+    Args:
+        graph (nx.Graph): 拓撲圖物件。
+        component_df (pd.DataFrame): 元件統計 DataFrame。
+        corner_points (list): 轉角點座標列表。
+        line_path (str): 線段 CSV 儲存路徑。
+        component_path (str): 元件 CSV 儲存路徑。
+
+    Returns:
+        tuple: (str, str) 分別為線段報表與元件統計報表的存檔路徑。
+    """
+    # 1. 產出線段報表
+    line_data = []
+    for u, v, d in graph.edges(data=True):
+        line_data.append({
+            "block_id": d.get('block_id', 1),
+            "start_x": u[0],
+            "start_y": u[1],
+            "end_x": v[0],
+            "end_y": v[1],
+            "length": d.get('length', 0)
+        })
+    df_lines = pd.DataFrame(line_data)
+    if download:
+        df_lines.to_csv(line_path, index=False, encoding='utf-8-sig')
+
+    # 2. 產出元件報表 (包含轉角點數量)
+    df_comp_final = component_df.copy()
+    corner_row = pd.DataFrame([{"Component": "Corner Points", "QTY": len(corner_points)}])
+    df_comp_final = pd.concat([df_comp_final, corner_row], ignore_index=True)
+    if download:
+        df_comp_final.to_csv(component_path, index=False, encoding='utf-8-sig')
+
+    return line_path, component_path
 
 if __name__ == "__main__":
+    # 設定輸入檔案與基礎路徑
     file_name = "/home/excellent/SmartBOM/data/ISO圖_N_BGAS_5001_SPTS_V2.csv"
+    # 讀取 CAD CSV 資料
     df = pd.read_csv(file_name, engine='python')
+    # 建立管網拓撲並修復連通性
     graph = calculate_line(df, color='ByLayer')
+    # 生成管網連通報告
     generate_graph_report(graph)
-    generate_component_report(df, ["Reducer", "Hose", "Ball Valve", "Check Valve (CV)", "Diaphragm Valve", "Plate", "VCR"])
+    # 找出系統中的轉角點
+    corner_points = find_corner_points(graph)
+    # 執行所有元件的 BOM 統計
+    report_df = generate_component_report(df, report_items= [
+        "Ball Valve",
+        "Diaphragm Valve",
+        "Check Valve (CV)",
+        "Regulagtor",
+        "3P Regulagtor",
+        "Tee",
+        "Reducer",
+        "ELBOW",
+        "NUT(F)",
+        "NUT(M)",
+        "S Gland",
+        "L Gland",
+        "GASKET",
+        "VCR Tee",
+        "Union R.Tee",
+        "Union Tee",
+        "Gauge",
+        "Union",
+        "Reducer Union",
+        "Hose",
+    ])
+    # 視覺化管網結果
     visualize_graph_components(graph)
+    # 匯出分析結果至 CSV 檔案
+    export_to_csv(graph, report_df, corner_points)

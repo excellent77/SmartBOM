@@ -1,4 +1,5 @@
 # ignore dirs
+.vscode/
 data/
 
 #ignore files
