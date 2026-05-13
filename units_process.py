@@ -871,7 +871,7 @@ if __name__ == "__main__":
     # 讀取 CAD CSV 資料
     df = pd.read_csv(file_name, engine='python')
     # 建立管網拓撲並修復連通性
-    graph = calculate_line(df, color='ByLayer')
+    graph = calculate_line(df)
     # 生成管網連通報告
     generate_graph_report(graph)
     # 找出系統中的轉角點
