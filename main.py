@@ -2,6 +2,7 @@ import pandas as pd
 import gradio as gr
 import networkx as nx
 from units_process import calculate_line, visualize_graph_components, find_corner_points, generate_component_report, export_to_csv
+from dxf_reader import read_dwg
 
 # 全域變數用於存儲目前處理中的圖形數據
 current_data = {
@@ -33,11 +34,10 @@ COMPONENT_LIST = [
     "Reducer Union",
     "Hose",
 ]
-SAVE_PATH = r"/home/excellent/SmartBOM/data/"
 
 def process_file(file):
     """
-    處理上傳的 CAD CSV 檔案，啟動管網拓撲分析、元件偵測與轉角點辨識。
+    處理上傳的 CAD DWG 檔案，啟動管網拓撲分析、元件偵測與轉角點辨識。
 
     Args:
         file (tempfile._TemporaryFileWrapper): Gradio 傳入的暫存檔案物件。
@@ -47,7 +47,7 @@ def process_file(file):
     """
     if file is None:
         return None, None, None, None
-    df = pd.read_csv(file.name, engine='python')
+    df = read_dwg(file.name)
     current_data["df"] = df
     graph = calculate_line(df)
     
@@ -159,7 +159,7 @@ with gr.Blocks(title="SmartBOM Manager") as demo:
     with gr.Tabs():
         with gr.TabItem("1. 資料上傳"):
             with gr.Row():
-                file_input = gr.File(label="上傳 CAD CSV 資料")
+                file_input = gr.File(label="上傳 CAD DWG 檔案")
                 load_btn = gr.Button("開始分析管網與元件", variant="primary")
             gr.Markdown("請先在此分頁上傳檔案，系統將自動分析拓撲、計算元件與標註轉角點。")
 

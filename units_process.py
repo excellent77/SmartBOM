@@ -1,3 +1,4 @@
+import os
 import random
 import numpy as np
 import pandas as pd
@@ -5,6 +6,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 
+from dxf_reader import read_dwg
 from graph_process import Graph_Data
 
 
@@ -335,7 +337,7 @@ def calculate_NUT_M(df:pd.DataFrame, name:str='NUT(M)', color:str="顏色_8"):
     
 def calculate_S_Gland(df:pd.DataFrame, name:str='S Gland', color:str="顏色_142"):
     """
-    計算 S Gland 的數量（通常一組由三個聚合線組成）。
+    計算 S Gland 的數量。
 
     Args:
         df (pd.DataFrame): 原始資料 DataFrame。
@@ -355,11 +357,11 @@ def calculate_S_Gland(df:pd.DataFrame, name:str='S Gland', color:str="顏色_142
             conditions=[('出圖型式', [color])]
         )
         df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()/3
+        return df['計數'].sum()
     
 def calculate_L_Gland(df:pd.DataFrame, name:str='L Gland', color:str="顏色_11"):
     """
-    計算 L Gland 的數量（通常一組由三個聚合線組成）。
+    計算 L Gland 的數量。
 
     Args:
         df (pd.DataFrame): 原始資料 DataFrame。
@@ -379,7 +381,7 @@ def calculate_L_Gland(df:pd.DataFrame, name:str='L Gland', color:str="顏色_11"
             conditions=[('出圖型式', [color])]
         )
         df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()/3
+        return df['計數'].sum()
     
 def calculate_GASKET(df:pd.DataFrame, name:str='GASKET', color:str="顏色_165"):
     """
@@ -691,13 +693,17 @@ def generate_graph_report(graph:nx.Graph):
     for comp_idx, component in enumerate(connected_components):
         label = f"區塊 {comp_idx + 1}"
         subgraph = graph.subgraph(component)
-        comp_length = sum([d['length'] for u, v, d in subgraph.edges(data=True)])
+        comp_length = sum([d.get('length', 0) for u, v, d in subgraph.edges(data=True)])
         bom_records.append({
             "ENT DESCRIPTION": label,
             "length": comp_length
         })
 
-    bom_df = pd.DataFrame(bom_records)
+    bom_df = pd.DataFrame(bom_records, columns=["ENT DESCRIPTION", "length"])
+    if bom_df.empty:
+        print("⚠️ 沒有可生成的管網報表，graph 可能為空或未包含任何邊。")
+        return
+
     summary_df = bom_df.sort_values('length', ascending=False)
 
     final_table = pd.DataFrame({
@@ -866,10 +872,10 @@ def export_to_csv(
     return line_path, component_path
 
 if __name__ == "__main__":
-    # 設定輸入檔案與基礎路徑
-    file_name = "/home/excellent/SmartBOM/data/ISO圖_N_BGAS_5001_SPTS_V2.csv"
-    # 讀取 CAD CSV 資料
-    df = pd.read_csv(file_name, engine='python')
+    '''# 設定輸入檔案與基礎路徑
+    file_name = "/home/li-cho-yueh/SmartBOM/data/16_單線圖_KOXDLP2000.dwg"
+    # 讀取 CAD DWG 資料
+    df = read_dwg(file_name)
     # 建立管網拓撲並修復連通性
     graph = calculate_line(df)
     # 生成管網連通報告
@@ -902,4 +908,49 @@ if __name__ == "__main__":
     # 視覺化管網結果
     visualize_graph_components(graph)
     # 匯出分析結果至 CSV 檔案
-    export_to_csv(graph, report_df, corner_points)
+    #export_to_csv(graph, report_df, corner_points)'''
+
+    import os
+    data_dir = "/home/li-cho-yueh/SmartBOM/data/"
+    os.makedirs(os.path.join(data_dir, "reports"), exist_ok=True)
+    for file in os.listdir(data_dir):
+        if file.endswith(".dwg"):
+            print(f"Generated report: {file}")
+            df = read_dwg(os.path.join(data_dir, file))
+            # 建立管網拓撲並修復連通性
+            graph = calculate_line(df)
+            # 生成管網連通報告
+            generate_graph_report(graph)
+            # 找出系統中的轉角點
+            corner_points = find_corner_points(graph)
+            # 執行所有元件的 BOM 統計
+            report_df = generate_component_report(df, report_items= [
+                "Ball Valve",
+                "Diaphragm Valve",
+                "Check Valve (CV)",
+                "Regulagtor",
+                "3P Regulagtor",
+                "Tee",
+                "Reducer",
+                "ELBOW",
+                "NUT(F)",
+                "NUT(M)",
+                "S Gland",
+                "L Gland",
+                "GASKET",
+                "VCR Tee",
+                "Union R.Tee",
+                "Union Tee",
+                "Gauge",
+                "Union",
+                "Reducer Union",
+                "Hose",
+            ])
+            # 匯出分析結果至 CSV 檔案
+            export_to_csv(
+                graph,
+                report_df,
+                corner_points,
+                line_path=os.path.join(data_dir, "reports", f"lines_{file}.csv"),
+                component_path=os.path.join(data_dir, "reports", f"components_{file}.csv")
+            )
