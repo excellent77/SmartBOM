@@ -869,21 +869,30 @@ def export_to_csv(
     if download:
         df_comp_final.to_csv(component_path, index=False, encoding='utf-8-sig')
 
-    return line_path, component_path
+    if download:
+        return line_path, component_path
+    else:
+        return df_lines, df_comp_final
 
-if __name__ == "__main__":
-    '''# 設定輸入檔案與基礎路徑
-    file_name = "/home/li-cho-yueh/SmartBOM/data/16_單線圖_KOXDLP2000.dwg"
-    # 讀取 CAD DWG 資料
-    df = read_dwg(file_name)
-    # 建立管網拓撲並修復連通性
+def build_reports(file_path:str)->tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    將管線資料與元件統計匯出為兩個 CSV 檔案。
+
+    Args:
+        graph (nx.Graph): 拓撲圖物件。
+        component_df (pd.DataFrame): 元件統計 DataFrame。
+        corner_points (list): 轉角點座標列表。
+        line_path (str): 線段 CSV 儲存路徑。
+        component_path (str): 元件 CSV 儲存路徑。
+
+    Returns:
+        tuple: (pd.DataFrame, pd.DataFrame) 分別為線段報表與元件統計報表之檔案
+    """
+    df = read_dwg(file_path)
     graph = calculate_line(df)
-    # 生成管網連通報告
     generate_graph_report(graph)
-    # 找出系統中的轉角點
     corner_points = find_corner_points(graph)
-    # 執行所有元件的 BOM 統計
-    report_df = generate_component_report(df, report_items= [
+    component_df = generate_component_report(df, report_items= [
         "Ball Valve",
         "Diaphragm Valve",
         "Check Valve (CV)",
@@ -905,52 +914,16 @@ if __name__ == "__main__":
         "Reducer Union",
         "Hose",
     ])
-    # 視覺化管網結果
-    visualize_graph_components(graph)
-    # 匯出分析結果至 CSV 檔案
-    #export_to_csv(graph, report_df, corner_points)'''
 
-    import os
-    data_dir = "/home/li-cho-yueh/SmartBOM/data/"
-    os.makedirs(os.path.join(data_dir, "reports"), exist_ok=True)
-    for file in os.listdir(data_dir):
-        if file.endswith(".dwg"):
-            print(f"Generated report: {file}")
-            df = read_dwg(os.path.join(data_dir, file))
-            # 建立管網拓撲並修復連通性
-            graph = calculate_line(df)
-            # 生成管網連通報告
-            generate_graph_report(graph)
-            # 找出系統中的轉角點
-            corner_points = find_corner_points(graph)
-            # 執行所有元件的 BOM 統計
-            report_df = generate_component_report(df, report_items= [
-                "Ball Valve",
-                "Diaphragm Valve",
-                "Check Valve (CV)",
-                "Regulagtor",
-                "3P Regulagtor",
-                "Tee",
-                "Reducer",
-                "ELBOW",
-                "NUT(F)",
-                "NUT(M)",
-                "S Gland",
-                "L Gland",
-                "GASKET",
-                "VCR Tee",
-                "Union R.Tee",
-                "Union Tee",
-                "Gauge",
-                "Union",
-                "Reducer Union",
-                "Hose",
-            ])
-            # 匯出分析結果至 CSV 檔案
-            export_to_csv(
-                graph,
-                report_df,
-                corner_points,
-                line_path=os.path.join(data_dir, "reports", f"lines_{file}.csv"),
-                component_path=os.path.join(data_dir, "reports", f"components_{file}.csv")
-            )
+    line_df, component_df = export_to_csv(graph, component_df, corner_points, download=False)
+    return line_df, component_df
+
+
+
+
+if __name__ == "__main__":
+    # 設定輸入檔案與基礎路徑
+    file_name = "/home/li-cho-yueh/SmartBOM/data/16_單線圖_KOXDLP2000.dwg"
+
+    build_reports(file_name) #輸出兩個檔案之DF
+    
