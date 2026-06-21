@@ -430,6 +430,30 @@ def calculate_VCR_Tee(df:pd.DataFrame, name:str='VCR Tee', color:str="顏色_7")
         )
         df = df[df['名稱'].isin(['填充線'])]
         return df['計數'].sum()
+    
+def calculate_VCR_U_Tee(df:pd.DataFrame, name:str='VCR 正 Tee', color:str="顏色_84"):
+    """
+    計算 VCR 正 Tee 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'VCR 正 Tee'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_84"。
+
+    Returns:
+        int: 計算出的數量。
+    """
+    value = check_block(df, name)
+    if value:
+        return value
+    else:
+        df = process_df_data(
+            df,
+            columns_name=['計數', '名稱'],
+            conditions=[('出圖型式', [color])]
+        )
+        df = df[df['名稱'].isin(['聚合線'])]
+        return df['計數'].sum()
 
 def calculate_Union_R_Tee(df:pd.DataFrame, name:str='Union R.Tee', color:str="顏色_171"):
     """
@@ -587,7 +611,18 @@ def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
     
     return nx.number_connected_components(graph)
 
-'''def calculate_Gauge(df:pd.DataFrame, name:str='Gauge', color:str="顏色_40"):
+def calculate_CAP(df:pd.DataFrame, name:str='CAP', color:str="顏色_37"):
+    """
+    計算 CAP 的數量。
+
+    Args:
+        df (pd.DataFrame): 原始資料 DataFrame。
+        name (str, optional): 圖塊名稱。預設為 'CAP'。
+        color (str, optional): 辨識用的顏色標籤。預設為 "顏色_37"。
+
+    Returns:
+        int: 計算出的數量。
+    """
     value = check_block(df, name)
     if value:
         return value
@@ -609,8 +644,9 @@ def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
                 components.pop()
             components.append(subgraph.nodes)
 
-        return len(components)'''
-
+        return len(components)/2
+    
+    
 def calculate_line(df:pd.DataFrame, color:str="顏色_30"):
     """
     建立管網拓撲圖，包含管線幾何處理、長度標註配對與連接修復。
@@ -795,12 +831,14 @@ def generate_component_report(df: pd.DataFrame, report_items: list):
         "L Gland": calculate_L_Gland,
         "GASKET": calculate_GASKET,
         "VCR Tee": calculate_VCR_Tee,
+        "VCR 正 Tee": calculate_VCR_U_Tee,
         "Union R.Tee": calculate_Union_R_Tee,
         "Union Tee": calculate_Union_Tee,
         "Gauge": calculate_Gauge,
         "Union": calculate_Union,
         "Reducer Union": calculate_Reducer_Union,
         "Hose": calculate_hose,
+        "CAP(母塞頭)": calculate_CAP,
     }
 
     results = []
@@ -874,7 +912,12 @@ def export_to_csv(
     else:
         return df_lines, df_comp_final
 
-def build_reports(file_path:str)->tuple[pd.DataFrame, pd.DataFrame]:
+def build_reports(
+        file_path:str,
+        download:bool=True,
+        line_path=f"lines.csv",
+        component_path=f"components.csv",        
+    )->tuple[pd.DataFrame, pd.DataFrame]:
     """
     將管線資料與元件統計匯出為兩個 CSV 檔案。
 
@@ -907,15 +950,22 @@ def build_reports(file_path:str)->tuple[pd.DataFrame, pd.DataFrame]:
         "L Gland",
         "GASKET",
         "VCR Tee",
+        "VCR 正 Tee",
         "Union R.Tee",
         "Union Tee",
         "Gauge",
         "Union",
         "Reducer Union",
         "Hose",
+        "CAP(母塞頭)"
     ])
 
-    line_df, component_df = export_to_csv(graph, component_df, corner_points, download=False)
+    line_df, component_df = export_to_csv(
+        graph, component_df, corner_points,
+        download=download,
+        line_path=line_path,
+        component_path=component_path
+    )
     return line_df, component_df
 
 
@@ -923,7 +973,25 @@ def build_reports(file_path:str)->tuple[pd.DataFrame, pd.DataFrame]:
 
 if __name__ == "__main__":
     # 設定輸入檔案與基礎路徑
-    file_name = "/home/li-cho-yueh/SmartBOM/data/16_單線圖_KOXDLP2000.dwg"
+    #file_name = "/home/f11167/SmartBOM/data/1_單線圖_KMACLM0100.dxf"
+    #build_reports(file_name) #輸出兩個檔案之DF
 
-    build_reports(file_name) #輸出兩個檔案之DF
-    
+    idx = 0
+    for path in os.listdir("/home/f11167/SmartBOM/data/"):
+        if path.endswith(".dxf"):
+            idx += 1
+            print(f"Processing file: {path}")
+            build_reports(
+                f"/home/f11167/SmartBOM/data/{path}",
+                download=True,
+                line_path=f"/home/f11167/SmartBOM/data/reports/{path[:-4]}_lines.csv",
+                component_path=f"/home/f11167/SmartBOM/data/reports/{path[:-4]}_components.csv"
+            )
+
+    '''path = "/home/f11167/SmartBOM/data/16_單線圖_KOXDLP2000.dxf"
+    build_reports(
+        path,
+        download=True,
+        line_path=f"/home/f11167/SmartBOM/lines.csv",
+        component_path=f"/home/f11167/SmartBOM/components.csv"
+    )'''
