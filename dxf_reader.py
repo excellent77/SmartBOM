@@ -756,7 +756,15 @@ def export_dxf_by_color_to_png(dxf_path: str, output_dir: str = None, use_layout
 
 
 if __name__ == "__main__":
-    path = "/home/f11167/SmartBOM/data/16_單線圖_KOXDLP2000.dxf"
-    export_dxf_by_color_to_png(path, "/home/f11167/SmartBOM/")
-    df = read_dwg(path)
-    df.to_csv("/home/f11167/SmartBOM/test.csv", index=False, encoding='utf-8-sig')
+    #path = "/home/f11167/SmartBOM/data/16_單線圖_KOXDLP2000.dxf"
+    import os
+    for file in os.listdir("/home/f11167/SmartBOM/data"):
+        try:
+            code = int(file.split("_")[0])
+        except Exception:
+            code = 10000
+        if file.lower().endswith((".dxf")) and code <= 15:
+            path = os.path.join("/home/f11167/SmartBOM/data", file)
+            export_dxf_by_color_to_png(path, os.path.join("/home/f11167/SmartBOM/", file))
+            df = read_dwg(path)
+            df.to_csv("/home/f11167/SmartBOM/test.csv", index=False, encoding='utf-8-sig')
