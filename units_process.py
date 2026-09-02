@@ -977,12 +977,12 @@ if __name__ == "__main__":
     #build_reports(file_name) #輸出兩個檔案之DF
 
     idx = 0
-    for path in os.listdir("/home/f11167/SmartBOM/data/"):
-        if path.endswith(".dxf"):
+    for path in os.listdir("/home/f11167/SmartBOM/data/data_new/"):
+        if path.endswith(".dwg"):
             idx += 1
             print(f"Processing file: {path}")
             build_reports(
-                f"/home/f11167/SmartBOM/data/{path}",
+                f"/home/f11167/SmartBOM/data/data_new/{path}",
                 download=True,
                 line_path=f"/home/f11167/SmartBOM/data/reports/{path[:-4]}_lines.csv",
                 component_path=f"/home/f11167/SmartBOM/data/reports/{path[:-4]}_components.csv"

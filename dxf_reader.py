@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
-from ezdxf import colors
+from ezdxf import bbox, colors
 
 
 
@@ -434,6 +434,18 @@ def _add_row(rows: list, name: str, color: str, values: dict, count: int = 1):
     rows.append(row)
 
 
+def _text_bounds_center(entity):
+    """Return the visual bounding-box center for TEXT/MTEXT when available."""
+    try:
+        bounds = bbox.extents([entity])
+        if bounds.has_data:
+            center = bounds.center
+            return float(center.x), float(center.y)
+    except Exception:
+        pass
+    return None
+
+
 def _explode_polyline(entity):
     if hasattr(entity, "get_points"):
         points = [tuple(pt[:2]) for pt in entity.get_points()]
@@ -554,21 +566,33 @@ def _rows_for_entity(entity, entity_type, color):
 
     elif entity_type == "TEXT":
         insert = _normalize_point(entity.dxf.insert)
-        _add_row(rows, "文字", color, {
+        values = {
             "位置 X": insert[0],
             "位置 Y": insert[1],
             "值": entity.dxf.text,
+            "高度": float(getattr(entity.dxf, "height", 0)),
+            "寬度係數": float(getattr(entity.dxf, "width", 1)),
             "旋轉": float(getattr(entity.dxf, "rotation", 0)),
-        })
+        }
+        text_center = _text_bounds_center(entity)
+        if text_center is not None:
+            values.update({"文字中心 X": text_center[0], "文字中心 Y": text_center[1]})
+        _add_row(rows, "文字", color, values)
 
     elif entity_type == "MTEXT":
         insert = _normalize_point(entity.dxf.insert)
-        _add_row(rows, "多行文字", color, {
+        values = {
             "位置 X": insert[0],
             "位置 Y": insert[1],
             "值": entity.text,
+            "高度": float(getattr(entity.dxf, "char_height", 0)),
+            "寬度": float(getattr(entity.dxf, "width", 0)),
             "旋轉": float(getattr(entity.dxf, "rotation", 0)),
-        })
+        }
+        text_center = _text_bounds_center(entity)
+        if text_center is not None:
+            values.update({"文字中心 X": text_center[0], "文字中心 Y": text_center[1]})
+        _add_row(rows, "多行文字", color, values)
 
     elif entity_type == "INSERT":
         insert = _normalize_point(entity.dxf.insert)

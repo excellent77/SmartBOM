@@ -4,15 +4,12 @@
 每條管線圖元各自成組；其餘非文字圖元依顏色及幾何連通性聚類成元件。
 """
 
-from __future__ import annotations
-
-import argparse
 import math
 import re
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -20,28 +17,48 @@ import pandas as pd
 from dxf_reader import read_dwg
 
 
+# ===== 可調整參數 =====
+COMPONENT_TOLERANCE = 0.5
+CONNECTION_TOLERANCE = 0.5
+DUPLICATE_TOLERANCE = 0.01
+SEGMENT_INTERSECTION_EPSILON = 1e-9
+CIRCLE_SAMPLE_STEPS = 72
+ARC_SAMPLE_STEPS = 36
+MIN_ARC_SAMPLE_STEPS = 8
+DISTANCE_SCORE_WEIGHT = 100.0
+HORIZONTAL_ALIGNMENT_BONUS = 5.0
+VERTICAL_ALIGNMENT_BONUS = 5.0
+ALIGNMENT_ABSOLUTE_TOLERANCE = 1.0
+ALIGNMENT_SLOPE_TOLERANCE = 0.15
+TEXT_WIDTH_PER_CHARACTER_RATIO = 0.6
+TUBE_COLOR = "顏色_30"
+BOM_OUTPUT_SUFFIX = "_connectivity_vote_bom.csv"
+DETAILS_OUTPUT_SUFFIX = "_connectivity_vote_bom_details.csv"
+ADJACENCY_OUTPUT_SUFFIX = "_connectivity_vote_bom_adjacency.csv"
+
+
 # 依 GAS零件圖塊對照表_v5 更新；此映射只屬於本程式。
 COLOR_COMPONENT_MAP = {
-    "顏色_181": {"name": "Ball Valve"},
-    "顏色_3": {"name": "Diaphragm Valve"},
-    "顏色_24": {"name": "Bellow Valve"},
-    "顏色_212": {"name": "Check Valve"},
+    "顏色_181": {"name": "Ball-valve"},
+    "顏色_3": {"name": "Dia-valve"},
+    "顏色_24": {"name": "Bellow valve"},
+    "顏色_212": {"name": "C.V"},
     "顏色_140": {"name": "3P Regulator"},
     "顏色_5": {"name": "Reducer"},
-    "顏色_16": {"name": "Elbow"},
-    "顏色_1": {"name": "NUT(F)"},
+    "顏色_16": {"name": "ELBOW"},
+    "顏色_1": {"name": "Nut(F)"},
     "顏色_8": {"name": "NUT(M)"},
-    "顏色_142": {"name": "S Gland"},
-    "顏色_11": {"name": "L Gland"},
+    "顏色_142": {"name": "S-Gland"},
+    "顏色_11": {"name": "L-Gland"},
     "顏色_165": {"name": "Gasket"},
     "顏色_171": {"name": "Union R.Tee"},
     "顏色_241": {"name": "Union Tee"},
     "顏色_67": {"name": "Union"},
-    "顏色_211": {"name": "Reducer Union"},
-    "顏色_4": {"name": "Hose"},
+    "顏色_211": {"name": "Reducer-Union"},
+    "顏色_4": {"name": "軟管"},
     "顏色_37": {"name": "Cap"},
     "顏色_6": {"name": "Regulator(SWG)"},
-    "顏色_122": {"name": "Regulator(VCR)"},
+    "顏色_122": {"name": "Regulator(FVCR)"},
     "顏色_33": {"name": "Tee"},
     "顏色_104": {"name": "R.Tee"},
     "顏色_153": {"name": "VCR Tee"},
@@ -120,7 +137,11 @@ def _point(row: pd.Series, x_columns: Sequence[str], y_columns: Sequence[str]) -
     return None if x is None or y is None else (x, y)
 
 
-def _sample_circle(center: tuple[float, float], radius: float, steps: int = 72) -> np.ndarray:
+def _sample_circle(
+    center: tuple[float, float],
+    radius: float,
+    steps: int = CIRCLE_SAMPLE_STEPS,
+) -> np.ndarray:
     angles = np.linspace(0, 2 * math.pi, steps + 1)
     return np.column_stack((center[0] + radius * np.cos(angles), center[1] + radius * np.sin(angles)))
 
@@ -139,7 +160,10 @@ def _sample_arc(row: pd.Series, center: tuple[float, float], radius: float) -> n
         end_angle = start_angle + math.radians(total_deg)
     while end_angle < start_angle:
         end_angle += 2 * math.pi
-    count = max(8, int(36 * (end_angle - start_angle) / (2 * math.pi)))
+    count = max(
+        MIN_ARC_SAMPLE_STEPS,
+        int(ARC_SAMPLE_STEPS * (end_angle - start_angle) / (2 * math.pi)),
+    )
     angles = np.linspace(start_angle, end_angle, count + 1)
     return np.column_stack((center[0] + radius * np.cos(angles), center[1] + radius * np.sin(angles)))
 
@@ -176,6 +200,22 @@ def clean_dxf_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _text_center(row: pd.Series, text: str, insert: tuple[float, float]) -> tuple[float, float]:
+    """以文字框中心配對；缺少框尺寸時退回 DXF 插入點。"""
+    height = _number(row, "高度", "文字高度")
+    width = _number(row, "寬度", "文字寬度")
+    if height is None or height <= 0:
+        return insert
+    if width is None or width <= 0:
+        width_factor = _number(row, "寬度係數") or 1.0
+        width = len(text) * height * width_factor * TEXT_WIDTH_PER_CHARACTER_RATIO
+    rotation = math.radians(_number(row, "旋轉") or 0.0)
+    along = np.asarray([math.cos(rotation), math.sin(rotation)])
+    upward = np.asarray([-math.sin(rotation), math.cos(rotation)])
+    center = np.asarray(insert, dtype=float) + along * width / 2 + upward * height / 2
+    return float(center[0]), float(center[1])
+
+
 def extract_texts(df: pd.DataFrame) -> list[dict]:
     texts = []
     for index, row in df.iterrows():
@@ -191,7 +231,12 @@ def extract_texts(df: pd.DataFrame) -> list[dict]:
                 value = clean_dxf_text(candidate)
                 break
         if value:
-            texts.append({"index": int(index), "text": value, "position": position})
+            visual_center = _point(row, ("文字中心 X",), ("文字中心 Y",))
+            texts.append({
+                "index": int(index),
+                "text": value,
+                "position": visual_center or _text_center(row, value, position),
+            })
     return texts
 
 
@@ -208,7 +253,13 @@ def _point_segment_distance(point: np.ndarray, start: np.ndarray, end: np.ndarra
     return float(np.linalg.norm(point - (start + ratio * delta)))
 
 
-def _segments_intersect(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray, epsilon: float = 1e-9) -> bool:
+def _segments_intersect(
+    a: np.ndarray,
+    b: np.ndarray,
+    c: np.ndarray,
+    d: np.ndarray,
+    epsilon: float = SEGMENT_INTERSECTION_EPSILON,
+) -> bool:
     ab, cd = b - a, d - c
     values = (_cross(ab, c - a), _cross(ab, d - a), _cross(cd, a - c), _cross(cd, b - c))
     proper = ((values[0] > epsilon and values[1] < -epsilon) or (values[0] < -epsilon and values[1] > epsilon)) and (
@@ -271,15 +322,16 @@ def component_center(component: Sequence[Geometry]) -> tuple[float, float]:
     return float((points[:, 0].min() + points[:, 0].max()) / 2), float((points[:, 1].min() + points[:, 1].max()) / 2)
 
 
-TUBE_COLOR = "顏色_30"
 FINISH_MATERIAL_NAMES = {
     "tee", "r.tee", "r tee", "reducer", "elbow", "s gland",
     "s-gland", "l gland", "l-gland", "cap",
 }
 
-SIZE_TOKEN = r'(?:\d+(?:/\d+)?"|\d+(?:\.\d+)?A)'
+SIZE_TOKEN = r'(?:\d+(?:/\d+)?"|\d+(?:\.\d+)?A|\d+(?:\.\d+)?\s*mm)'
 TUBE_RE = re.compile(
-    rf"^\s*(?P<size>{SIZE_TOKEN})\s+(?P<material>\S+)\s+(?P<finish>[^\s-]+)\s*-\s*(?P<length>\d+(?:\.\d+)?)\s*M\s*$",
+    rf"^\s*(?P<size>{SIZE_TOKEN})\s+(?P<material>\S+)\s+"
+    rf"(?P<finish>[A-Za-z]{{2}})(?P<extra>.*?)\s*-\s*"
+    rf"(?P<length>\d+(?:\.\d+)?)\s*M\s*$",
     re.IGNORECASE,
 )
 HOSE_RE = re.compile(
@@ -315,26 +367,56 @@ def _format_number(value: float) -> str:
     return str(int(value)) if math.isclose(value, round(value)) else f"{value:g}"
 
 
-def _nearest_text(point: tuple[float, float], texts: Sequence[dict], pattern: re.Pattern | None = None):
+def _text_match_score(
+    component_position: tuple[float, float],
+    text_position: tuple[float, float],
+) -> tuple[float, float]:
+    """綜合距離、水平對齊與垂直對齊計算文字配對分數。"""
+    dx = abs(component_position[0] - text_position[0])
+    dy = abs(component_position[1] - text_position[1])
+    distance = math.hypot(dx, dy)
+    score = DISTANCE_SCORE_WEIGHT / (1.0 + distance)
+    if dy <= max(ALIGNMENT_ABSOLUTE_TOLERANCE, dx * ALIGNMENT_SLOPE_TOLERANCE):
+        score += HORIZONTAL_ALIGNMENT_BONUS
+    if dx <= max(ALIGNMENT_ABSOLUTE_TOLERANCE, dy * ALIGNMENT_SLOPE_TOLERANCE):
+        score += VERTICAL_ALIGNMENT_BONUS
+    return score, distance
+
+
+def _best_text_match(point: tuple[float, float], texts: Sequence[dict], pattern: re.Pattern | None = None):
     candidates = []
     for text in texts:
         match = pattern.search(text["text"]) if pattern else None
         if pattern is not None and match is None:
             continue
-        candidates.append((math.dist(point, text["position"]), text, match))
-    return min(candidates, key=lambda item: item[0]) if candidates else None
+        score, distance = _text_match_score(point, text["position"])
+        candidates.append((score, distance, text, match))
+    return max(candidates, key=lambda item: (item[0], -item[1], -item[2]["index"])) if candidates else None
+
+
+def _normalize_size(value: str) -> str:
+    value = re.sub(r"\s+", "", str(value).strip())
+    if value.casefold().endswith("mm"):
+        return f"{value[:-2]}mm"
+    if value.casefold().endswith("a"):
+        return f"{value[:-1]}A"
+    return value
 
 
 def _tube_description(text: str) -> dict | None:
-    """解析四個概念欄位：尺寸、基材、表面/等級、長度。"""
+    """解析 Tube/Coil Tube；加熱等附加描述不影響 BOM 規格。"""
     match = TUBE_RE.fullmatch(text)
     if not match:
         return None
+    extra = re.sub(r"\s+", " ", match.group("extra")).strip()
+    component_name = "Coil Tube" if re.search(r"coil\s*tube", extra, re.IGNORECASE) else "Tube"
+    finish = match.group("finish").upper()
     return {
-        "size": match.group("size"),
-        "material": f'{match.group("material")} {match.group("finish")}',
+        "name": component_name,
+        "size": _normalize_size(match.group("size")),
+        "material": f'{match.group("material")} {finish}',
         "base_material": match.group("material"),
-        "finish": match.group("finish").upper(),
+        "finish": finish,
         "length": float(match.group("length")),
     }
 
@@ -440,8 +522,8 @@ def build_adjacency_matrix(groups: Sequence[EntityGroup], tolerance: float) -> t
 def assign_tube_descriptions(groups: Sequence[EntityGroup], texts: Sequence[dict]) -> dict[int, dict]:
     """以分輪競爭方式，將合法描述文字一對一配給 Tube。
 
-    每輪所有未配對文字都選擇最近的剩餘 Tube；若多筆文字選到同一 Tube，
-    僅距離最近者取得該 Tube，其餘文字下一輪改從尚未占用的 Tube 中選擇。
+    每輪所有未配對文字都選擇綜合分數最高的剩餘 Tube；若多筆文字競爭
+    同一 Tube，僅分數最高者取得，其餘文字下一輪改從尚未占用 Tube 選擇。
     """
     available_tubes = {group.group_id for group in groups if group.color == TUBE_COLOR}
     assignments: dict[int, dict] = {}
@@ -455,26 +537,31 @@ def assign_tube_descriptions(groups: Sequence[EntityGroup], texts: Sequence[dict
             pending_texts.append((text, description))
 
     while pending_texts and available_tubes:
-        proposals: dict[int, list[tuple[float, dict, dict]]] = {}
+        proposals: dict[int, list[tuple[float, float, dict, dict]]] = {}
         for text, description in pending_texts:
-            group_id = min(
+            group_id = max(
                 available_tubes,
-                key=lambda node: (math.dist(groups[node].center, text["position"]), node),
+                key=lambda node: (
+                    _text_match_score(groups[node].center, text["position"])[0],
+                    -_text_match_score(groups[node].center, text["position"])[1],
+                    -node,
+                ),
             )
-            distance = math.dist(groups[group_id].center, text["position"])
-            proposals.setdefault(group_id, []).append((distance, text, description))
+            score, distance = _text_match_score(groups[group_id].center, text["position"])
+            proposals.setdefault(group_id, []).append((score, distance, text, description))
 
         assigned_text_indices = set()
         for group_id, candidates in proposals.items():
-            # 距離相同時用文字列號固定結果，確保每次執行都一致。
-            distance, text, description = min(
+            # 分數相同時依距離、文字列號固定結果，確保每次執行都一致。
+            score, distance, text, description = max(
                 candidates,
-                key=lambda item: (item[0], item[1]["index"]),
+                key=lambda item: (item[0], -item[1], -item[2]["index"]),
             )
             assignments[group_id] = {
                 **description,
                 "text": text["text"],
                 "text_index": text["index"],
+                "score": score,
                 "distance": distance,
             }
             available_tubes.remove(group_id)
@@ -507,10 +594,10 @@ def _connected_components(adjacency: dict[int, set[int]]) -> list[list[int]]:
 
 
 def _reducer_sizes(group: EntityGroup, texts: Sequence[dict]) -> tuple[str, str, str] | None:
-    nearest = _nearest_text(group.center, texts, REDUCER_RE)
+    nearest = _best_text_match(group.center, texts, REDUCER_RE)
     if nearest is None:
         return None
-    _, text, match = nearest
+    _, _, text, match = nearest
     return match.group("first"), match.group("second"), text["text"]
 
 
@@ -535,10 +622,10 @@ def _apply_group_rules(group: EntityGroup, incoming_size: str, material: str, te
         group.size = f'{incoming_size}x1/4"' if incoming_size else 'x1/4"'
         return incoming_size
 
-    if canonical == "hose":
-        nearest = _nearest_text(group.center, texts, HOSE_RE)
+    if canonical in {"hose", "軟管"}:
+        nearest = _best_text_match(group.center, texts, HOSE_RE)
         if nearest:
-            _, text, match = nearest
+            _, _, text, match = nearest
             group.size = match.group("size")
             group.quantity = float(match.group("length"))
             group.matched_text = text["text"]
@@ -620,19 +707,32 @@ def majority_first(values: Sequence[str]) -> str:
     return min(counts, key=lambda value: (-counts[value], first_position[value]))
 
 
-def _leading_size(text: str) -> str:
-    match = re.match(rf"^\s*(?P<size>{SIZE_TOKEN})(?=\s|[xX×]|$)", text, re.IGNORECASE)
-    return match.group("size") if match else ""
+def _extract_size(text: str) -> str:
+    """擷取文字尺寸；非數字開頭（如 CDA 15A）時改為搜尋後方。"""
+    stripped = str(text).strip()
+    if not stripped:
+        return ""
+    if re.match(r"^\d", stripped):
+        match = re.match(rf"(?P<size>{SIZE_TOKEN})(?=\s|[xX×]|$)", stripped, re.IGNORECASE)
+    else:
+        match = re.search(rf"(?P<size>{SIZE_TOKEN})(?=\s|[xX×]|$)", stripped, re.IGNORECASE)
+    return _normalize_size(match.group("size")) if match else ""
 
 
 def assign_nearest_text_to_groups(groups: Sequence[EntityGroup], texts: Sequence[dict]) -> dict[int, dict]:
-    """一般元件採群組中心到所有文字位置的最近距離配對。"""
+    """一般元件只和含尺寸文字進行綜合分數配對。"""
+    size_texts = []
+    for text in texts:
+        size = _extract_size(text["text"])
+        if size:
+            size_texts.append({**text, "size": size})
+
     result = {}
     for group in groups:
-        nearest = _nearest_text(group.center, texts)
-        if nearest:
-            distance, text, _ = nearest
-            result[group.group_id] = {**text, "distance": distance}
+        best = _best_text_match(group.center, size_texts)
+        if best:
+            score, distance, text, _ = best
+            result[group.group_id] = {**text, "score": score, "distance": distance}
     return result
 
 
@@ -654,8 +754,8 @@ def _components_for_nodes(adjacency: dict[int, set[int]], nodes: set[int]) -> li
     return components
 
 
-def _is_reducer(group: EntityGroup) -> bool:
-    return _canonical_name(group.name) == "reducer"
+def _is_size_boundary(group: EntityGroup) -> bool:
+    return _canonical_name(group.name) in {"reducer", "reducer-union"}
 
 
 def _is_gauge(group: EntityGroup) -> bool:
@@ -664,7 +764,7 @@ def _is_gauge(group: EntityGroup) -> bool:
 
 
 def _is_hose(group: EntityGroup) -> bool:
-    return _canonical_name(group.name) == "hose"
+    return _canonical_name(group.name) in {"hose", "軟管"}
 
 
 def _is_special_rtee(group: EntityGroup) -> bool:
@@ -698,7 +798,7 @@ def fill_by_connectivity_vote(
             if group.name == "Tube":
                 description = tube_descriptions.get(node)
                 group.material = description["material"] if description else ""
-            elif canonical == "hose":
+            elif canonical in {"hose", "軟管"}:
                 group.material = ""
             elif canonical == "gasket":
                 group.material = "SUS"
@@ -707,20 +807,24 @@ def fill_by_connectivity_vote(
             else:
                 group.material = "SUS316L"
 
-    # 尺寸：移除 Reducer 節點後重算連通塊，以各群組文字開頭尺寸投票。
-    non_reducer_nodes = {group.group_id for group in groups if not _is_reducer(group)}
+    # 尺寸：移除 Reducer 與 Reducer-Union 後重算連通塊。
+    non_reducer_nodes = {group.group_id for group in groups if not _is_size_boundary(group)}
     size_components = _components_for_nodes(adjacency, non_reducer_nodes)
     node_uniform_size: dict[int, str] = {}
     for connected in size_components:
         indexed_size_votes = []
         for node in connected:
-            if node in tube_descriptions:
-                indexed_size_votes.append((
-                    tube_descriptions[node]["text_index"],
-                    tube_descriptions[node]["size"],
-                ))
+            group = groups[node]
+            if group.color == TUBE_COLOR:
+                # Tube 只能用合法 Tube 規格文字投票；未配對的輔助管線不投票。
+                if node in tube_descriptions:
+                    indexed_size_votes.append((
+                        tube_descriptions[node]["text_index"],
+                        tube_descriptions[node]["size"],
+                    ))
+                continue
             elif node in nearest_texts:
-                size = _leading_size(nearest_texts[node]["text"])
+                size = nearest_texts[node]["size"]
                 if size:
                     indexed_size_votes.append((nearest_texts[node]["index"], size))
         indexed_size_votes.sort(key=lambda item: item[0])
@@ -731,20 +835,27 @@ def fill_by_connectivity_vote(
             group = groups[node]
             if group.name == "Tube":
                 description = tube_descriptions.get(node)
+                if description:
+                    group.name = description["name"]
                 group.size = description["size"] if description else uniform_size
                 group.quantity = description["length"] if description else 0.0
                 group.matched_text = description["text"] if description else ""
             elif _is_gauge(group):
                 group.size = '1/4"'
                 group.quantity = 1.0
+            elif _canonical_name(group.name) == "gasket" and any(
+                _is_gauge(groups[neighbor]) for neighbor in adjacency[group.group_id]
+            ):
+                group.size = '1/4"'
+                group.quantity = 1.0
             elif _is_special_rtee(group):
                 group.size = f'{uniform_size}x1/4"' if uniform_size else 'x1/4"'
                 group.quantity = 1.0
             elif _is_hose(group):
-                nearest = _nearest_text(group.center, texts, HOSE_RE)
+                nearest = _best_text_match(group.center, texts, HOSE_RE)
                 if nearest:
-                    _, text, match = nearest
-                    group.size = match.group("size")
+                    _, _, text, match = nearest
+                    group.size = _normalize_size(match.group("size"))
                     group.quantity = float(match.group("length"))
                     group.matched_text = text["text"]
                 else:
@@ -755,9 +866,9 @@ def fill_by_connectivity_vote(
                 group.size = uniform_size
                 group.quantity = 1.0
 
-    # Reducer 不屬於上述尺寸連通塊；由相鄰兩側連通塊的尺寸組合。
+    # Reducer/Reducer-Union 由相鄰兩側連通塊的尺寸組合。
     for group in groups:
-        if not _is_reducer(group):
+        if not _is_size_boundary(group):
             continue
         neighbor_sizes = []
         for neighbor in sorted(adjacency[group.group_id]):
@@ -767,17 +878,17 @@ def fill_by_connectivity_vote(
         if len(neighbor_sizes) >= 2:
             group.size = f"{neighbor_sizes[0]}x{neighbor_sizes[1]}"
         else:
-            nearest = _nearest_text(group.center, texts, REDUCER_RE)
+            nearest = _best_text_match(group.center, texts, REDUCER_RE)
             if nearest:
-                _, text, match = nearest
-                group.size = f'{match.group("first")}x{match.group("second")}'
+                _, _, text, match = nearest
+                group.size = f'{_normalize_size(match.group("first"))}x{_normalize_size(match.group("second"))}'
                 group.matched_text = text["text"]
             elif neighbor_sizes:
                 group.size = neighbor_sizes[0]
-                group.notes.append("Reducer 只找到單側尺寸")
+                group.notes.append(f"{group.name} 只找到單側尺寸")
             else:
                 group.size = ""
-                group.notes.append("Reducer 找不到相鄰尺寸")
+                group.notes.append(f"{group.name} 找不到相鄰尺寸")
         group.quantity = 1.0
 
     return tube_descriptions, nearest_texts
@@ -804,8 +915,10 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
 
     aggregated: dict[tuple[str, str, str], float] = {}
     for group in groups:
+        if group.name == "IGNORE":
+            continue
         key = (group.name, group.size, group.material)
-        if group.name in {"Tube", "Hose"}:
+        if group.name in {"Tube", "Coil Tube", "Hose", "軟管"}:
             # 沒有合法長度文字的圖元數量為 0，不以幾何長度臆測。
             if group.quantity <= 0:
                 continue
@@ -815,16 +928,16 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
 
     bom_rows = []
     for (name, size, material), quantity in aggregated.items():
-        display_quantity = f"{_format_number(quantity)}M" if name in {"Tube", "Hose"} else int(quantity)
+        display_quantity = f"{_format_number(quantity)}M" if name in {"Tube", "Coil Tube", "Hose", "軟管"} else int(quantity)
         bom_rows.append({"品名": name, "尺寸": size, "材質": material, "數量": display_quantity})
     return pd.DataFrame(bom_rows, columns=["品名", "尺寸", "材質", "數量"]), details
 
 
 def build_network_bom(
     df: pd.DataFrame,
-    component_tolerance: float = 0.5,
-    connection_tolerance: float = 0.5,
-    duplicate_tolerance: float = 0.01,
+    component_tolerance: float = COMPONENT_TOLERANCE,
+    connection_tolerance: float = CONNECTION_TOLERANCE,
+    duplicate_tolerance: float = DUPLICATE_TOLERANCE,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     groups, removed_rows = build_entity_groups(df, component_tolerance, duplicate_tolerance)
     matrix, adjacency = build_adjacency_matrix(groups, connection_tolerance)
@@ -838,34 +951,23 @@ def build_network_bom(
     return bom, details, matrix_df
 
 
-def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="用線段去重、鄰接矩陣與連通塊投票產生 BOM")
-    parser.add_argument("input", type=Path, help="輸入 DXF/DWG；亦相容向量 CSV")
-    parser.add_argument("-o", "--output", type=Path, help="BOM CSV；預設為 <input>_network_bom.csv")
-    parser.add_argument("--details-output", type=Path, help="各圖元組 BFS 結果明細")
-    parser.add_argument("--matrix-output", type=Path, help="圖元組鄰接矩陣 CSV")
-    parser.add_argument("--component-tolerance", type=float, default=0.5, help="同色圖元聚類容許距離")
-    parser.add_argument("--connection-tolerance", type=float, default=0.5, help="不同圖元組相連容許距離")
-    parser.add_argument("--duplicate-tolerance", type=float, default=0.01, help="同色重複線段端點/中點容許距離")
-    return parser.parse_args(argv)
-
-
-def main(argv: Iterable[str] | None = None) -> int:
-    args = parse_args(argv)
-    if args.component_tolerance < 0 or args.connection_tolerance < 0 or args.duplicate_tolerance < 0:
+def main(file_path: str) -> int:
+    """讀取指定 DXF/DWG/CSV，並在輸入檔旁產生 BOM、明細及鄰接矩陣。"""
+    if COMPONENT_TOLERANCE < 0 or CONNECTION_TOLERANCE < 0 or DUPLICATE_TOLERANCE < 0:
         raise ValueError("容許距離不可小於 0")
-    if not args.input.is_file():
-        raise FileNotFoundError(f"找不到輸入檔案：{args.input}")
+    input_path = Path(file_path)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"找不到輸入檔案：{input_path}")
 
-    output = args.output or args.input.with_name(f"{args.input.stem}_connectivity_vote_bom.csv")
-    details_output = args.details_output or output.with_name(f"{output.stem}_details.csv")
-    matrix_output = args.matrix_output or output.with_name(f"{output.stem}_adjacency.csv")
-    df = load_vector_data(args.input)
+    output = input_path.with_name(f"{input_path.stem}{BOM_OUTPUT_SUFFIX}")
+    details_output = input_path.with_name(f"{input_path.stem}{DETAILS_OUTPUT_SUFFIX}")
+    matrix_output = input_path.with_name(f"{input_path.stem}{ADJACENCY_OUTPUT_SUFFIX}")
+    df = load_vector_data(input_path)
     bom, details, matrix = build_network_bom(
         df,
-        component_tolerance=args.component_tolerance,
-        connection_tolerance=args.connection_tolerance,
-        duplicate_tolerance=args.duplicate_tolerance,
+        component_tolerance=COMPONENT_TOLERANCE,
+        connection_tolerance=CONNECTION_TOLERANCE,
+        duplicate_tolerance=DUPLICATE_TOLERANCE,
     )
     removed_rows = details.attrs.get("removed_duplicate_rows", [])
 
@@ -882,4 +984,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import os
+    for path in os.listdir("./data/data_new/"):
+        if path.lower().endswith((".dxf", ".dwg")):
+            print(f"處理檔案：{path}")
+            main(os.path.join("./data/data_new/", path))
