@@ -1,4 +1,4 @@
-"""以去重、圖元組鄰接關係及連通塊投票產生工程 BOM。
+"""以去重、圖元組鄰接關係及整數規劃產生工程 BOM。
 
 輸入 DXF/DWG 時會直接呼叫 dxf_reader.read_dwg()。顏色 30 視為 Tube，
 每條管線圖元各自成組；其餘非文字圖元依顏色及幾何連通性聚類成元件。
@@ -13,6 +13,8 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.sparse import lil_matrix
 
 from dxf_reader import read_dwg
 
@@ -26,14 +28,11 @@ CIRCLE_SAMPLE_STEPS = 72
 ARC_SAMPLE_STEPS = 36
 MIN_ARC_SAMPLE_STEPS = 8
 DISTANCE_SCORE_WEIGHT = 100.0
-HORIZONTAL_ALIGNMENT_BONUS = 5.0
-VERTICAL_ALIGNMENT_BONUS = 5.0
-ALIGNMENT_ABSOLUTE_TOLERANCE = 1.0
-ALIGNMENT_SLOPE_TOLERANCE = 0.15
+COMPONENT_SIZE_SCORE_WEIGHT = 1.0
 TUBE_COLOR = "顏色_30"
-BOM_OUTPUT_SUFFIX = "_connectivity_vote_bom.csv"
-DETAILS_OUTPUT_SUFFIX = "_connectivity_vote_bom_details.csv"
-ADJACENCY_OUTPUT_SUFFIX = "_connectivity_vote_bom_adjacency.csv"
+BOM_OUTPUT_SUFFIX = "_bom.csv"
+DETAILS_OUTPUT_SUFFIX = "_details.csv"
+ADJACENCY_OUTPUT_SUFFIX = "_adjacency.csv"
 
 
 # 依 GAS零件圖塊對照表_v5 更新；此映射只屬於本程式。
@@ -199,11 +198,6 @@ def clean_dxf_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _text_center(row: pd.Series, text: str, insert: tuple[float, float]) -> tuple[float, float]:
-    """回傳 DXF 提供的文字位置，不再以字數及字高估算文字中心。"""
-    return insert
-
-
 def extract_texts(df: pd.DataFrame) -> list[dict]:
     texts = []
     for index, row in df.iterrows():
@@ -219,11 +213,10 @@ def extract_texts(df: pd.DataFrame) -> list[dict]:
                 value = clean_dxf_text(candidate)
                 break
         if value:
-            visual_center = _point(row, ("文字中心 X",), ("文字中心 Y",))
             texts.append({
                 "index": int(index),
                 "text": value,
-                "position": visual_center or _text_center(row, value, position),
+                "position": position,
             })
     return texts
 
@@ -359,16 +352,9 @@ def _text_match_score(
     component_position: tuple[float, float],
     text_position: tuple[float, float],
 ) -> tuple[float, float]:
-    """綜合距離、水平對齊與垂直對齊計算文字配對分數。"""
-    dx = abs(component_position[0] - text_position[0])
-    dy = abs(component_position[1] - text_position[1])
-    distance = math.hypot(dx, dy)
-    score = DISTANCE_SCORE_WEIGHT / (1.0 + distance)
-    if dy <= max(ALIGNMENT_ABSOLUTE_TOLERANCE, dx * ALIGNMENT_SLOPE_TOLERANCE):
-        score += HORIZONTAL_ALIGNMENT_BONUS
-    if dx <= max(ALIGNMENT_ABSOLUTE_TOLERANCE, dy * ALIGNMENT_SLOPE_TOLERANCE):
-        score += VERTICAL_ALIGNMENT_BONUS
-    return score, distance
+    """使用 test.py 的純距離公式，不加入元件名稱關鍵字分數。"""
+    distance = math.dist(component_position, text_position)
+    return DISTANCE_SCORE_WEIGHT / (1.0 + distance), distance
 
 
 def _best_text_match(point: tuple[float, float], texts: Sequence[dict], pattern: re.Pattern | None = None):
@@ -507,60 +493,179 @@ def build_adjacency_matrix(groups: Sequence[EntityGroup], tolerance: float) -> t
     return matrix, adjacency
 
 
-def assign_tube_descriptions(groups: Sequence[EntityGroup], texts: Sequence[dict]) -> dict[int, dict]:
-    """以分輪競爭方式，將合法描述文字一對一配給 Tube。
+def assign_tube_descriptions(
+    groups: Sequence[EntityGroup],
+    adjacency: dict[int, set[int]],
+    texts: Sequence[dict],
+    component_text_matches: dict[int, dict],
+) -> tuple[dict[int, dict], dict[int, str]]:
+    """以 MILP 同時決定 Tube 文字配對與各連通段代表尺寸。
 
-    每輪所有未配對文字都選擇綜合分數最高的剩餘 Tube；若多筆文字競爭
-    同一 Tube，僅分數最高者取得，其餘文字下一輪改從尚未占用 Tube 選擇。
+    一般元件文字的尺寸出現次數會加入目標分數；同一連通段配對到的
+    Tube 必須採用相同的 ``(尺寸, 材質與表面處理)`` 規格。
     """
-    available_tubes = {group.group_id for group in groups if group.color == TUBE_COLOR}
+    tube_groups = [group for group in groups if group.color == TUBE_COLOR]
+    if not tube_groups:
+        return {}, {}
+
+    pending = [
+        (text, description)
+        for text in texts
+        if (description := _tube_description(text["text"])) is not None
+    ]
+
+    # Reducer 類元件不參與分段。
+    non_boundary_nodes = {group.group_id for group in groups if not _is_size_boundary(group)}
+    segments = _components_for_nodes(adjacency, non_boundary_nodes)
+    node_segment = {node: segment_id for segment_id, nodes in enumerate(segments) for node in nodes}
+    active_segments = list(range(len(segments)))
+
+    def spec_key(description: dict) -> tuple[str, str]:
+        return description["size"], description["material"]
+
+    specs = sorted({spec_key(description) for _, description in pending})
+    sizes = sorted(
+        {description["size"] for _, description in pending}
+        | {
+            match["size"]
+            for group_id, match in component_text_matches.items()
+            if group_id in node_segment and match.get("size")
+        }
+    )
+    if not sizes:
+        return {}, {}
+
+    tube_ids = [group.group_id for group in tube_groups]
+    tube_by_id = {group.group_id: group for group in tube_groups}
+
+    # x：文字與 Tube；y：連通段代表尺寸；z：連通段完整 Tube 規格。
+    x_pairs = [(text_id, tube_id) for text_id in range(len(pending)) for tube_id in tube_ids]
+    x_index = {pair: position for position, pair in enumerate(x_pairs)}
+    y_offset = len(x_index)
+    y_pairs = [(segment_id, size) for segment_id in active_segments for size in sizes]
+    y_index = {pair: y_offset + position for position, pair in enumerate(y_pairs)}
+    z_offset = y_offset + len(y_index)
+    z_pairs = [(segment_id, spec) for segment_id in active_segments for spec in specs]
+    z_index = {pair: z_offset + position for position, pair in enumerate(z_pairs)}
+    variable_count = len(x_index) + len(y_index) + len(z_index)
+    objective = np.zeros(variable_count, dtype=float)
+    score_cache: dict[tuple[int, int], tuple[float, float]] = {}
+    for text_id, (text, _description) in enumerate(pending):
+        for tube_id in tube_ids:
+            score, distance = _text_match_score(tube_by_id[tube_id].center, text["position"])
+            score_cache[text_id, tube_id] = score, distance
+            objective[x_index[text_id, tube_id]] = -score
+
+    size_occurrences: dict[tuple[int, str], int] = {}
+    for group_id, match in component_text_matches.items():
+        if group_id not in node_segment or not match.get("size"):
+            continue
+        key = node_segment[group_id], match["size"]
+        size_occurrences[key] = size_occurrences.get(key, 0) + 1
+    for key, count in size_occurrences.items():
+        objective[y_index[key]] = -count * COMPONENT_SIZE_SCORE_WEIGHT
+
+    constraint_rows: list[dict[int, float]] = []
+    lower_bounds: list[float] = []
+    upper_bounds: list[float] = []
+
+    def add_constraint(coefficients: dict[int, float], lower: float, upper: float) -> None:
+        constraint_rows.append(coefficients)
+        lower_bounds.append(lower)
+        upper_bounds.append(upper)
+
+    # 每段文字、每條 Tube 都至多使用一次。
+    for text_id in range(len(pending)):
+        add_constraint({x_index[text_id, tube_id]: 1.0 for tube_id in tube_ids}, 0.0, 1.0)
+    for tube_id in tube_ids:
+        add_constraint({x_index[text_id, tube_id]: 1.0 for text_id in range(len(pending))}, 0.0, 1.0)
+
+    # 每段恰選一個代表尺寸，並至多採用一種完整 Tube 規格。
+    for segment_id in active_segments:
+        add_constraint({y_index[segment_id, size]: 1.0 for size in sizes}, 1.0, 1.0)
+        if specs:
+            add_constraint({z_index[segment_id, spec]: 1.0 for spec in specs}, 0.0, 1.0)
+
+    # 完整 Tube 規格必須服從該段代表尺寸。
+    for segment_id in active_segments:
+        for spec in specs:
+            add_constraint(
+                {z_index[segment_id, spec]: 1.0, y_index[segment_id, spec[0]]: -1.0},
+                -np.inf,
+                0.0,
+            )
+
+    # Tube 文字必須服從該段唯一的完整 Tube 規格。
+    for text_id, (_text, description) in enumerate(pending):
+        spec = spec_key(description)
+        for tube_id in tube_ids:
+            segment_id = node_segment[tube_id]
+            add_constraint(
+                {x_index[text_id, tube_id]: 1.0, z_index[segment_id, spec]: -1.0},
+                -np.inf,
+                0.0,
+            )
+
+    matrix = lil_matrix((len(constraint_rows), variable_count), dtype=float)
+    for row_id, coefficients in enumerate(constraint_rows):
+        for variable_id, coefficient in coefficients.items():
+            matrix[row_id, variable_id] = coefficient
+    base_constraint = LinearConstraint(matrix.tocsr(), lower_bounds, upper_bounds)
+
+    # 先求可行的最大配對數，避免直接最小化距離時模型選擇完全不配對。
+    cardinality_objective = np.zeros(variable_count, dtype=float)
+    for variable_id in x_index.values():
+        cardinality_objective[variable_id] = -1.0
+    cardinality_result = milp(
+        c=cardinality_objective,
+        integrality=np.ones(variable_count, dtype=np.uint8),
+        bounds=Bounds(0.0, 1.0),
+        constraints=base_constraint,
+        options={"disp": False},
+    )
+    if not cardinality_result.success or cardinality_result.x is None:
+        raise RuntimeError(f"Tube 文字整數規劃無法求解：{cardinality_result.message}")
+
+    maximum_matches = round(sum(cardinality_result.x[variable_id] for variable_id in x_index.values()))
+    cardinality_row = lil_matrix((1, variable_count), dtype=float)
+    for variable_id in x_index.values():
+        cardinality_row[0, variable_id] = 1.0
+    result = milp(
+        c=objective,
+        integrality=np.ones(variable_count, dtype=np.uint8),
+        bounds=Bounds(0.0, 1.0),
+        constraints=[
+            base_constraint,
+            LinearConstraint(cardinality_row.tocsr(), maximum_matches, maximum_matches),
+        ],
+        options={"disp": False},
+    )
+    if not result.success or result.x is None:
+        raise RuntimeError(f"Tube 文字整數規劃無法求解：{result.message}")
+
+    segment_sizes = {
+        segment_id: next(size for size in sizes if result.x[y_index[segment_id, size]] > 0.5)
+        for segment_id in active_segments
+    }
     assignments: dict[int, dict] = {}
-    if not available_tubes:
-        return assignments
-
-    pending_texts = []
-    for text in texts:
-        description = _tube_description(text["text"])
-        if description is not None:
-            pending_texts.append((text, description))
-
-    while pending_texts and available_tubes:
-        proposals: dict[int, list[tuple[float, float, dict, dict]]] = {}
-        for text, description in pending_texts:
-            group_id = max(
-                available_tubes,
-                key=lambda node: (
-                    _text_match_score(groups[node].center, text["position"])[0],
-                    -_text_match_score(groups[node].center, text["position"])[1],
-                    -node,
-                ),
-            )
-            score, distance = _text_match_score(groups[group_id].center, text["position"])
-            proposals.setdefault(group_id, []).append((score, distance, text, description))
-
-        assigned_text_indices = set()
-        for group_id, candidates in proposals.items():
-            # 分數相同時依距離、文字列號固定結果，確保每次執行都一致。
-            score, distance, text, description = max(
-                candidates,
-                key=lambda item: (item[0], -item[1], -item[2]["index"]),
-            )
-            assignments[group_id] = {
+    for text_id, (text, description) in enumerate(pending):
+        for tube_id in tube_ids:
+            if result.x[x_index[text_id, tube_id]] <= 0.5:
+                continue
+            score, distance = score_cache[text_id, tube_id]
+            assignments[tube_id] = {
                 **description,
                 "text": text["text"],
                 "text_index": text["index"],
                 "score": score,
                 "distance": distance,
             }
-            available_tubes.remove(group_id)
-            assigned_text_indices.add(text["index"])
-
-        pending_texts = [
-            (text, description)
-            for text, description in pending_texts
-            if text["index"] not in assigned_text_indices
-        ]
-    return assignments
+    node_sizes = {
+        node: segment_sizes[segment_id]
+        for node, segment_id in node_segment.items()
+        if segment_id in segment_sizes
+    }
+    return assignments, node_sizes
 
 
 def _connected_components(adjacency: dict[int, set[int]]) -> list[list[int]]:
@@ -579,105 +684,6 @@ def _connected_components(adjacency: dict[int, set[int]]) -> list[list[int]]:
                     queue.append(neighbor)
         components.append(found)
     return components
-
-
-def _reducer_sizes(group: EntityGroup, texts: Sequence[dict]) -> tuple[str, str, str] | None:
-    nearest = _best_text_match(group.center, texts, REDUCER_RE)
-    if nearest is None:
-        return None
-    _, _, text, match = nearest
-    return match.group("first"), match.group("second"), text["text"]
-
-
-def _other_reducer_size(first: str, second: str, incoming: str) -> str:
-    if incoming.casefold() == first.casefold():
-        return second
-    if incoming.casefold() == second.casefold():
-        return first
-    return second
-
-
-def _apply_group_rules(group: EntityGroup, incoming_size: str, material: str, texts: Sequence[dict]) -> str:
-    """設定目前群組 BOM 欄位，回傳 BFS 傳給下一層的尺寸。"""
-    canonical = _canonical_name(group.name)
-    group.size, group.material, group.quantity = incoming_size, material, 1.0
-
-    if "gauge" in canonical or "guage" in canonical:
-        group.size = '1/4"'
-        return incoming_size  # Gauge 是支路元件，不改變主管尺寸。
-
-    if canonical in {"union r.tee", "vcr r.tee"}:
-        group.size = f'{incoming_size}x1/4"' if incoming_size else 'x1/4"'
-        return incoming_size
-
-    if canonical in {"hose", "軟管"}:
-        nearest = _best_text_match(group.center, texts, HOSE_RE)
-        if nearest:
-            _, _, text, match = nearest
-            group.size = match.group("size")
-            group.quantity = float(match.group("length"))
-            group.matched_text = text["text"]
-        else:
-            group.quantity = 0.0
-            group.notes.append("找不到軟管長度描述")
-        return group.size or incoming_size
-
-    if canonical == "reducer":
-        reducer = _reducer_sizes(group, texts)
-        if reducer:
-            first, second, text = reducer
-            group.size = f"{first}x{second}"
-            group.matched_text = text
-            return _other_reducer_size(first, second, incoming_size)
-        group.notes.append("找不到 Reducer 尺寸描述")
-    return incoming_size
-
-
-def fill_by_bfs(
-    groups: Sequence[EntityGroup],
-    adjacency: dict[int, set[int]],
-    texts: Sequence[dict],
-) -> dict[int, dict]:
-    tube_descriptions = assign_tube_descriptions(groups, texts)
-
-    for connected in _connected_components(adjacency):
-        seeds = [node for node in connected if node in tube_descriptions]
-        # 同一連通網若有多個合法起點，先使用文字離線段中點最近者。
-        seed = min(seeds, key=lambda node: tube_descriptions[node]["distance"]) if seeds else min(connected)
-        initial = tube_descriptions.get(seed, {"size": "", "material": "", "length": 0.0, "text": ""})
-        queue = deque([(seed, "", initial["size"], initial["material"])])
-        visited = set()
-
-        while queue:
-            node, parent, incoming_size, material = queue.popleft()
-            if node in visited:
-                continue
-            visited.add(node)
-            group = groups[node]
-
-            if group.name == "Tube":
-                description = tube_descriptions.get(node)
-                group.size, group.material = incoming_size, material
-                group.quantity = 0.0
-                if description:
-                    group.size = description["size"]
-                    group.material = description["material"]
-                    group.quantity = description["length"]
-                    group.matched_text = description["text"]
-                outgoing_size = group.size
-                outgoing_material = group.material
-            else:
-                outgoing_size = _apply_group_rules(group, incoming_size, material, texts)
-                outgoing_material = group.material
-
-            for neighbor in sorted(adjacency[node]):
-                if neighbor != parent and neighbor not in visited:
-                    queue.append((neighbor, node, outgoing_size, outgoing_material))
-
-        if not seeds:
-            for node in connected:
-                groups[node].notes.append("此連通區找不到合法 Tube 起點描述")
-    return tube_descriptions
 
 
 def majority_first(values: Sequence[str]) -> str:
@@ -708,15 +714,19 @@ def _extract_size(text: str) -> str:
 
 
 def assign_nearest_text_to_groups(groups: Sequence[EntityGroup], texts: Sequence[dict]) -> dict[int, dict]:
-    """一般元件只和含尺寸文字進行綜合分數配對。"""
+    """一般元件配對含尺寸文字，排除 Tube 規格與雙尺寸 Reducer 文字。"""
     size_texts = []
     for text in texts:
+        if _tube_description(text["text"]) is not None or REDUCER_RE.search(text["text"]):
+            continue
         size = _extract_size(text["text"])
         if size:
             size_texts.append({**text, "size": size})
 
     result = {}
     for group in groups:
+        if group.color == TUBE_COLOR or _is_size_boundary(group):
+            continue
         best = _best_text_match(group.center, size_texts)
         if best:
             score, distance, text, _ = best
@@ -759,14 +769,16 @@ def _is_special_rtee(group: EntityGroup) -> bool:
     return _canonical_name(group.name) in {"union r.tee", "vcr r.tee"}
 
 
-def fill_by_connectivity_vote(
+def fill_by_integer_programming(
     groups: Sequence[EntityGroup],
     adjacency: dict[int, set[int]],
     texts: Sequence[dict],
 ) -> tuple[dict[int, dict], dict[int, dict]]:
-    """依完整連通塊投票材質，再依移除 Reducer 的連通塊投票尺寸。"""
-    tube_descriptions = assign_tube_descriptions(groups, texts)
+    """以 MILP 決定 Tube 配對及分段尺寸，再套用既有特殊元件規則。"""
     nearest_texts = assign_nearest_text_to_groups(groups, texts)
+    tube_descriptions, node_uniform_size = assign_tube_descriptions(
+        groups, adjacency, texts, nearest_texts
+    )
 
     # 先保存每個一般圖元組最近的文字，Tube 則只採專用格式配對結果。
     for group in groups:
@@ -795,64 +807,43 @@ def fill_by_connectivity_vote(
             else:
                 group.material = "SUS316L"
 
-    # 尺寸：移除 Reducer 與 Reducer-Union 後重算連通塊。
-    non_reducer_nodes = {group.group_id for group in groups if not _is_size_boundary(group)}
-    size_components = _components_for_nodes(adjacency, non_reducer_nodes)
-    node_uniform_size: dict[int, str] = {}
-    for connected in size_components:
-        indexed_size_votes = []
-        for node in connected:
-            group = groups[node]
-            if group.color == TUBE_COLOR:
-                # Tube 只能用合法 Tube 規格文字投票；未配對的輔助管線不投票。
-                if node in tube_descriptions:
-                    indexed_size_votes.append((
-                        tube_descriptions[node]["text_index"],
-                        tube_descriptions[node]["size"],
-                    ))
-                continue
-            elif node in nearest_texts:
-                size = nearest_texts[node]["size"]
-                if size:
-                    indexed_size_votes.append((nearest_texts[node]["index"], size))
-        indexed_size_votes.sort(key=lambda item: item[0])
-        size_votes = [value for _, value in indexed_size_votes]
-        uniform_size = majority_first(size_votes)
-        for node in connected:
-            node_uniform_size[node] = uniform_size
-            group = groups[node]
-            if group.name == "Tube":
-                description = tube_descriptions.get(node)
-                if description:
-                    group.name = description["name"]
-                group.size = description["size"] if description else uniform_size
-                group.quantity = description["length"] if description else 0.0
-                group.matched_text = description["text"] if description else ""
-            elif _is_gauge(group):
-                group.size = '1/4"'
-                group.quantity = 1.0
-            elif _canonical_name(group.name) == "gasket" and any(
-                _is_gauge(groups[neighbor]) for neighbor in adjacency[group.group_id]
-            ):
-                group.size = '1/4"'
-                group.quantity = 1.0
-            elif _is_special_rtee(group):
-                group.size = f'{uniform_size}x1/4"' if uniform_size else 'x1/4"'
-                group.quantity = 1.0
-            elif _is_hose(group):
-                nearest = _best_text_match(group.center, texts, HOSE_RE)
-                if nearest:
-                    _, _, text, match = nearest
-                    group.size = _normalize_size(match.group("size"))
-                    group.quantity = float(match.group("length"))
-                    group.matched_text = text["text"]
-                else:
-                    group.size = uniform_size
-                    group.quantity = 0.0
-                    group.notes.append("找不到軟管長度描述")
+    # 尺寸直接使用 MILP 選出的連通段代表尺寸，不再進行眾數投票。
+    for group in groups:
+        if _is_size_boundary(group):
+            continue
+        uniform_size = node_uniform_size.get(group.group_id, "")
+        if group.name == "Tube":
+            description = tube_descriptions.get(group.group_id)
+            if description:
+                group.name = description["name"]
+            group.size = uniform_size
+            group.quantity = description["length"] if description else 0.0
+            group.matched_text = description["text"] if description else ""
+        elif _is_gauge(group):
+            group.size = '1/4"'
+            group.quantity = 1.0
+        elif _canonical_name(group.name) == "gasket" and any(
+            _is_gauge(groups[neighbor]) for neighbor in adjacency[group.group_id]
+        ):
+            group.size = '1/4"'
+            group.quantity = 1.0
+        elif _is_special_rtee(group):
+            group.size = f'{uniform_size}x1/4"' if uniform_size else 'x1/4"'
+            group.quantity = 1.0
+        elif _is_hose(group):
+            nearest = _best_text_match(group.center, texts, HOSE_RE)
+            if nearest:
+                _, _, text, match = nearest
+                group.size = _normalize_size(match.group("size"))
+                group.quantity = float(match.group("length"))
+                group.matched_text = text["text"]
             else:
                 group.size = uniform_size
-                group.quantity = 1.0
+                group.quantity = 0.0
+                group.notes.append("找不到軟管長度描述")
+        else:
+            group.size = uniform_size
+            group.quantity = 1.0
 
     # Reducer/Reducer-Union 由相鄰兩側連通塊的尺寸組合。
     for group in groups:
@@ -930,7 +921,7 @@ def build_network_bom(
     groups, removed_rows = build_entity_groups(df, component_tolerance, duplicate_tolerance)
     matrix, adjacency = build_adjacency_matrix(groups, connection_tolerance)
     texts = extract_texts(df)
-    fill_by_connectivity_vote(groups, adjacency, texts)
+    fill_by_integer_programming(groups, adjacency, texts)
     bom, details = make_reports(groups)
     details.attrs["removed_duplicate_rows"] = removed_rows
     labels = [f"G{group.group_id}:{group.name}" for group in groups]
