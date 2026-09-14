@@ -4,6 +4,12 @@ import numpy as np
 import pandas as pd
 from scipy.spatial import cKDTree
 
+from columns import (
+    COL_START_X, COL_START_Y, COL_END_X, COL_END_Y,
+    COL_POS_X, COL_POS_Y, COL_VALUE, COL_ROTATION,
+    EDGE_LENGTH, EDGE_LINE_ID, EDGE_BLOCK_ID, EDGE_TYPE,
+    make_node,
+)
 
 
 def node_to_line_dist(p: tuple, line_start: tuple, line_end: tuple):
@@ -94,7 +100,7 @@ class Graph_Data(object):
             flange = (x, y)
             length, node_idx = nodes_tree.query(flange, k=1)
             if length < tolerance:
-                self.graph.add_edge(nodes[node_idx], flange, length=0, type='flange')
+                self.graph.add_edge(nodes[node_idx], flange, **{EDGE_LENGTH: 0, EDGE_TYPE: 'flange'})
 
     def check_T_connection(self, tolerance=1e-2):
         """
@@ -115,19 +121,19 @@ class Graph_Data(object):
                 if edge == edge2: continue
                 if self.graph.degree(s1) == 1 and node_to_line_dist(s1, s2, e2) < tolerance:
                     if self.graph.degree(s2) != 1:
-                        self.graph.add_edge(s1, s2, length=0, type='virtual_connection')
+                        self.graph.add_edge(s1, s2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
                     elif self.graph.degree(e2) != 1:
-                        self.graph.add_edge(s1, e2, length=0, type='virtual_connection')
+                        self.graph.add_edge(s1, e2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
                     else:
-                        self.graph.add_edge(s1, s2, length=0, type='virtual_connection')
+                        self.graph.add_edge(s1, s2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
 
                 if self.graph.degree(e1) == 1 and node_to_line_dist(e1, s2, e2) < tolerance:
                     if self.graph.degree(s2) != 1:
-                        self.graph.add_edge(e1, s2, length=0, type='virtual_connection')
+                        self.graph.add_edge(e1, s2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
                     elif self.graph.degree(e2) != 1:
-                        self.graph.add_edge(e1, e2, length=0, type='virtual_connection')
+                        self.graph.add_edge(e1, e2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
                     else:
-                        self.graph.add_edge(e1, s2, length=0, type='virtual_connection')
+                        self.graph.add_edge(e1, s2, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_connection'})
     
     def check_collinear_extension(self, dist_tolerance=100, tolerance=1e-2):
         """
@@ -166,7 +172,7 @@ class Graph_Data(object):
                                 closest_node = w
                 
                 if closest_node and min_dist<dist_tolerance and not self.graph.has_edge(u, closest_node):
-                    self.graph.add_edge(u, closest_node, length=0, type='virtual_extension')
+                    self.graph.add_edge(u, closest_node, **{EDGE_LENGTH: 0, EDGE_TYPE: 'virtual_extension'})
                     new_connections_found = True
             
             if not new_connections_found:
@@ -188,9 +194,9 @@ class Graph_Data(object):
         if self.texts_data is not None:
             print("正在配對管線長度...")
             for _, text_row in self.texts_data.iterrows():
-                tx, ty = text_row['位置 X'], text_row['位置 Y']
+                tx, ty = text_row[COL_POS_X], text_row[COL_POS_Y]
                 
-                angle_rad = math.radians(text_row['旋轉'])
+                angle_rad = math.radians(text_row[COL_ROTATION])
                 
                 tv = np.array([math.cos(angle_rad), math.sin(angle_rad)])
                 
@@ -198,10 +204,12 @@ class Graph_Data(object):
                 best_comp_idx = -1
                 
                 for idx, row in self.pipes_data.iterrows():
-                    u = (row['起點 X'], row['起點 Y'])
-                    v = (row['終點 X'], row['終點 Y'])
+                    u = (row[COL_START_X], row[COL_START_Y])
+                    v = (row[COL_END_X], row[COL_END_Y])
                     dx, dy = v[0] - u[0], v[1] - u[1]
                     length = math.hypot(dx, dy)
+                    if length == 0:
+                        continue
                     
                     ev = np.array([dx / length, dy / length])
                     
@@ -214,14 +222,29 @@ class Graph_Data(object):
                 
                 if best_comp_idx != -1 and best_dist < dist_tolerance:
                     try:
-                        val = float(text_row['值'])
+                        val = float(text_row[COL_VALUE])
                         pipe_lengths[best_comp_idx] = pipe_lengths.get(best_comp_idx, 0) + val
                     except (ValueError, TypeError, KeyError):
                         pass
         
         for idx, row in self.pipes_data.iterrows():
-            p1 = (row['起點 X'], row['起點 Y'])
-            p2 = (row['終點 X'], row['終點 Y'])
-            self.graph.add_edge(p1, p2, length=pipe_lengths.get(idx, 0), line_id=idx)
+            p1 = make_node(row[COL_START_X], row[COL_START_Y])
+            p2 = make_node(row[COL_END_X], row[COL_END_Y])
+            matched_length = pipe_lengths.get(idx, 0)
+            geo_length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+            self.graph.add_edge(
+                p1, p2,
+                **{
+                    EDGE_LENGTH: matched_length if matched_length > 0 else geo_length,
+                    EDGE_LINE_ID: idx,
+                }
+            )
+
+        # 自動計算連通分群並設定 block_id
+        components = list(nx.connected_components(self.graph))
+        for i, comp_nodes in enumerate(components):
+            sub = self.graph.subgraph(comp_nodes)
+            for u, v in sub.edges():
+                self.graph[u][v][EDGE_BLOCK_ID] = i + 1
 
         return self.graph

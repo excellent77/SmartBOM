@@ -10,6 +10,16 @@ import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
 from ezdxf import bbox, colors
+from columns import (
+    COL_NAME, COL_COLOR, COL_COUNT,
+    COL_START_X, COL_START_Y, COL_END_X, COL_END_Y,
+    COL_CENTER_X, COL_CENTER_Y,
+    COL_POS_X, COL_POS_Y, COL_VALUE, COL_ROTATION, COL_RADIUS,
+    COL_HEIGHT, COL_WIDTH, COL_WIDTH_FACTOR, COL_TEXT_CENTER_X, COL_TEXT_CENTER_Y,
+    ETYPE_LINE, ETYPE_POLYLINE, ETYPE_CIRCLE, ETYPE_ELLIPSE,
+    ETYPE_ARC, ETYPE_TEXT, ETYPE_MTEXT, ETYPE_HATCH,
+    round_coord,
+)
 
 
 
@@ -426,9 +436,9 @@ def _extract_count_from_attribs(attribs):
 
 def _add_row(rows: list, name: str, color: str, values: dict, count: int = 1):
     row = {
-        "名稱": name,
-        "出圖型式": color,
-        "計數": count,
+        COL_NAME: name,
+        COL_COLOR: color,
+        COL_COUNT: count,
     }
     row.update(values)
     rows.append(row)
@@ -451,7 +461,7 @@ def _explode_polyline(entity):
         points = [tuple(pt[:2]) for pt in entity.get_points()]
     else:
         points = []
-        for vertex in entity.vertices():
+        for vertex in entity.vertices:
             try:
                 location = vertex.dxf.location
                 points.append((float(location.x), float(location.y)))
@@ -514,29 +524,29 @@ def _rows_for_entity(entity, entity_type, color):
     if entity_type == "LINE":
         start = _normalize_point(entity.dxf.start)
         end = _normalize_point(entity.dxf.end)
-        _add_row(rows, "線", color, {
-            "起點 X": start[0],
-            "起點 Y": start[1],
-            "終點 X": end[0],
-            "終點 Y": end[1],
+        _add_row(rows, ETYPE_LINE, color, {
+            COL_START_X: round_coord(start[0]),
+            COL_START_Y: round_coord(start[1]),
+            COL_END_X: round_coord(end[0]),
+            COL_END_Y: round_coord(end[1]),
         })
 
     elif entity_type in {"LWPOLYLINE", "POLYLINE"}:
-        name = "聚合線" if getattr(entity, "is_closed", False) or getattr(entity, "closed", False) else "線"
+        name = ETYPE_POLYLINE if getattr(entity, "is_closed", False) or getattr(entity, "closed", False) else ETYPE_LINE
         for index, (start, end) in enumerate(_explode_polyline(entity)):
             _add_row(rows, name, color, {
-                "起點 X": float(start[0]),
-                "起點 Y": float(start[1]),
-                "終點 X": float(end[0]),
-                "終點 Y": float(end[1]),
+                COL_START_X: round_coord(float(start[0])),
+                COL_START_Y: round_coord(float(start[1])),
+                COL_END_X: round_coord(float(end[0])),
+                COL_END_Y: round_coord(float(end[1])),
             }, count=1 if index == 0 else 0)
 
     elif entity_type == "CIRCLE":
         center = _normalize_point(entity.dxf.center)
-        _add_row(rows, "圓", color, {
-            "中心點 X": center[0],
-            "中心點 Y": center[1],
-            "半徑": float(entity.dxf.radius),
+        _add_row(rows, ETYPE_CIRCLE, color, {
+            COL_CENTER_X: round_coord(center[0]),
+            COL_CENTER_Y: round_coord(center[1]),
+            COL_RADIUS: float(entity.dxf.radius),
         })
 
     elif entity_type == "ARC":
@@ -547,61 +557,61 @@ def _rows_for_entity(entity, entity_type, color):
         except Exception:
             start_point = (None, None)
             end_point = (None, None)
-        _add_row(rows, "弧", color, {
-            "中心點 X": center[0],
-            "中心點 Y": center[1],
-            "起點 X": start_point[0],
-            "起點 Y": start_point[1],
-            "終點 X": end_point[0],
-            "終點 Y": end_point[1],
-            "半徑": float(entity.dxf.radius),
+        _add_row(rows, ETYPE_ARC, color, {
+            COL_CENTER_X: round_coord(center[0]),
+            COL_CENTER_Y: round_coord(center[1]),
+            COL_START_X: round_coord(start_point[0]) if start_point[0] is not None else None,
+            COL_START_Y: round_coord(start_point[1]) if start_point[1] is not None else None,
+            COL_END_X: round_coord(end_point[0]) if end_point[0] is not None else None,
+            COL_END_Y: round_coord(end_point[1]) if end_point[1] is not None else None,
+            COL_RADIUS: float(entity.dxf.radius),
         })
 
     elif entity_type == "ELLIPSE":
         center = _normalize_point(entity.dxf.center)
-        _add_row(rows, "橢圓", color, {
-            "中心點 X": center[0],
-            "中心點 Y": center[1],
+        _add_row(rows, ETYPE_ELLIPSE, color, {
+            COL_CENTER_X: round_coord(center[0]),
+            COL_CENTER_Y: round_coord(center[1]),
         })
 
     elif entity_type == "TEXT":
         insert = _normalize_point(entity.dxf.insert)
         values = {
-            "位置 X": insert[0],
-            "位置 Y": insert[1],
-            "值": entity.dxf.text,
-            "高度": float(getattr(entity.dxf, "height", 0)),
-            "寬度係數": float(getattr(entity.dxf, "width", 1)),
-            "旋轉": float(getattr(entity.dxf, "rotation", 0)),
+            COL_POS_X: round_coord(insert[0]),
+            COL_POS_Y: round_coord(insert[1]),
+            COL_VALUE: entity.dxf.text,
+            COL_HEIGHT: float(getattr(entity.dxf, "height", 0)),
+            COL_WIDTH_FACTOR: float(getattr(entity.dxf, "width", 1)),
+            COL_ROTATION: float(getattr(entity.dxf, "rotation", 0)),
         }
         text_center = _text_bounds_center(entity)
         if text_center is not None:
-            values.update({"文字中心 X": text_center[0], "文字中心 Y": text_center[1]})
-        _add_row(rows, "文字", color, values)
+            values.update({COL_TEXT_CENTER_X: round_coord(text_center[0]), COL_TEXT_CENTER_Y: round_coord(text_center[1])})
+        _add_row(rows, ETYPE_TEXT, color, values)
 
     elif entity_type == "MTEXT":
         insert = _normalize_point(entity.dxf.insert)
         values = {
-            "位置 X": insert[0],
-            "位置 Y": insert[1],
-            "值": entity.text,
-            "高度": float(getattr(entity.dxf, "char_height", 0)),
-            "寬度": float(getattr(entity.dxf, "width", 0)),
-            "旋轉": float(getattr(entity.dxf, "rotation", 0)),
+            COL_POS_X: round_coord(insert[0]),
+            COL_POS_Y: round_coord(insert[1]),
+            COL_VALUE: entity.text,
+            COL_HEIGHT: float(getattr(entity.dxf, "char_height", 0)),
+            COL_WIDTH: float(getattr(entity.dxf, "width", 0)),
+            COL_ROTATION: float(getattr(entity.dxf, "rotation", 0)),
         }
         text_center = _text_bounds_center(entity)
         if text_center is not None:
-            values.update({"文字中心 X": text_center[0], "文字中心 Y": text_center[1]})
-        _add_row(rows, "多行文字", color, values)
+            values.update({COL_TEXT_CENTER_X: round_coord(text_center[0]), COL_TEXT_CENTER_Y: round_coord(text_center[1])})
+        _add_row(rows, ETYPE_MTEXT, color, values)
 
     elif entity_type == "INSERT":
         insert = _normalize_point(entity.dxf.insert)
         row = {
-            "名稱": entity.dxf.name or "INSERT",
-            "出圖型式": color,
-            "計數": _extract_count_from_attribs(entity.attribs),
-            "X": insert[0],
-            "Y": insert[1],
+            COL_NAME: entity.dxf.name or "INSERT",
+            COL_COLOR: color,
+            COL_COUNT: _extract_count_from_attribs(entity.attribs),
+            "X": round_coord(insert[0]),
+            "Y": round_coord(insert[1]),
         }
         for attrib in entity.attribs:
             row[attrib.dxf.tag] = attrib.dxf.text
@@ -613,12 +623,12 @@ def _rows_for_entity(entity, entity_type, color):
         if bounds is not None:
             min_x, min_y, max_x, max_y = bounds
             values.update({
-                "起點 X": min_x,
-                "起點 Y": min_y,
-                "終點 X": max_x,
-                "終點 Y": max_y,
+                COL_START_X: round_coord(min_x),
+                COL_START_Y: round_coord(min_y),
+                COL_END_X: round_coord(max_x),
+                COL_END_Y: round_coord(max_y),
             })
-        _add_row(rows, "填充線", color, values)
+        _add_row(rows, ETYPE_HATCH, color, values)
 
     return rows
 

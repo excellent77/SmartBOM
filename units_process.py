@@ -4,10 +4,23 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+import plotly.graph_objects as go
 from scipy.spatial import cKDTree
 
 from dxf_reader import read_dwg
 from graph_process import Graph_Data
+from columns import (
+    COL_NAME, COL_COLOR, COL_COUNT,
+    COL_START_X, COL_START_Y, COL_END_X, COL_END_Y,
+    COL_CENTER_X, COL_CENTER_Y,
+    COL_POS_X, COL_POS_Y, COL_VALUE, COL_ROTATION,
+    ETYPE_LINE, ETYPE_POLYLINE, ETYPE_CIRCLE, ETYPE_ELLIPSE,
+    ETYPE_ARC, ETYPE_TEXT, ETYPE_MTEXT, ETYPE_HATCH,
+    EDGE_LENGTH, EDGE_LINE_ID, EDGE_BLOCK_ID,
+    DISP_BLOCK_ID, DISP_LINE_ID, DISP_START_X, DISP_START_Y,
+    DISP_END_X, DISP_END_Y, DISP_LENGTH,
+    DISP_COMPONENT, DISP_QTY,
+)
 
 
 
@@ -68,11 +81,11 @@ def check_block(df:pd.DataFrame, name:str):
         float or bool: 若找到對應圖塊則回傳數量總和，否則回傳 False。
     """
     processed_df = df.copy()
-    categories = processed_df['名稱'].unique()
+    categories = processed_df[COL_NAME].unique()
     for value in categories:
         if name in str(value).lower():
-            processed_df['計數'] = pd.to_numeric(processed_df['計數'], errors='coerce')
-            return processed_df[processed_df['名稱']==value]['計數'].sum()
+            processed_df[COL_COUNT] = pd.to_numeric(processed_df[COL_COUNT], errors='coerce')
+            return processed_df[processed_df[COL_NAME]==value][COL_COUNT].sum()
     return False
 
 def calculate_ball_value(df:pd.DataFrame, name:str='ball_value', color:str="顏色_181"):
@@ -94,11 +107,11 @@ def calculate_ball_value(df:pd.DataFrame, name:str='ball_value', color:str="顏�
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['圓', '橢圓'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_CIRCLE, ETYPE_ELLIPSE])]
+        return df[COL_COUNT].sum()
 
 def calculate_dia_valve(df:pd.DataFrame, name:str='dia valve', color:str="顏色_3"):
     """
@@ -119,8 +132,8 @@ def calculate_dia_valve(df:pd.DataFrame, name:str='dia valve', color:str="顏色
     else:
         df = process_df_data(
             df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+            columns_name=[COL_START_X, COL_START_Y, COL_END_X, COL_END_Y],
+            conditions=[(COL_NAME, [ETYPE_LINE]), (COL_COLOR, [color])]
         )
         graph = Graph_Data(df)
         graph.build_graph()
@@ -154,11 +167,11 @@ def calculate_CV(df:pd.DataFrame, name:str='cv', color:str="顏色_212"):
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['圓', '橢圓'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_CIRCLE, ETYPE_ELLIPSE])]
+        return df[COL_COUNT].sum()
     
 def calculate_Regulagtor(df:pd.DataFrame, name:str='regulator', color:str="顏色_6"):
     """
@@ -178,11 +191,11 @@ def calculate_Regulagtor(df:pd.DataFrame, name:str='regulator', color:str="顏�
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['弧'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_ARC])]
+        return df[COL_COUNT].sum()
     
 def calculate_3P_Regulagtor(df:pd.DataFrame, name:str='3p_regulator', color:str="顏色_140"):
     """
@@ -202,11 +215,11 @@ def calculate_3P_Regulagtor(df:pd.DataFrame, name:str='3p_regulator', color:str=
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['弧'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_ARC])]
+        return df[COL_COUNT].sum()
     
 def calculate_Tee(df:pd.DataFrame, name:str='Tee', color:str="顏色_134"):
     """
@@ -223,9 +236,9 @@ def calculate_Tee(df:pd.DataFrame, name:str='Tee', color:str="顏色_134"):
     value = check_block(df, name)
     return value if value else process_df_data(
         df,
-        columns_name=['計數'],
-        conditions=[('出圖型式', [color])]
-    )['計數'].sum()
+        columns_name=[COL_COUNT],
+        conditions=[(COL_COLOR, [color])]
+    )[COL_COUNT].sum()
 
 def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5"):
     """
@@ -242,9 +255,9 @@ def calculate_reducer(df:pd.DataFrame, name:str='reducer', color:str="顏色_5")
     value = check_block(df, name)
     return value if value else process_df_data(
         df,
-        columns_name=['計數'],
-        conditions=[('出圖型式', [color])]
-    )['計數'].sum()
+        columns_name=[COL_COUNT],
+        conditions=[(COL_COLOR, [color])]
+    )[COL_COUNT].sum()
 
 def calculate_ELBOW(df:pd.DataFrame, name:str='elbow', color:str="顏色_16"):
     """
@@ -261,9 +274,9 @@ def calculate_ELBOW(df:pd.DataFrame, name:str='elbow', color:str="顏色_16"):
     value = check_block(df, name)
     return value if value else process_df_data(
         df,
-        columns_name=['計數'],
-        conditions=[('出圖型式', [color])]
-    )['計數'].sum()
+        columns_name=[COL_COUNT],
+        conditions=[(COL_COLOR, [color])]
+    )[COL_COUNT].sum()
 
 def calculate_NUT_F(df:pd.DataFrame, name:str='NUT(F)', color:str="顏色_1"):
     """
@@ -283,8 +296,8 @@ def calculate_NUT_F(df:pd.DataFrame, name:str='NUT(F)', color:str="顏色_1"):
     else:
         df = process_df_data(
             df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+            columns_name=[COL_START_X, COL_START_Y, COL_END_X, COL_END_Y],
+            conditions=[(COL_NAME, [ETYPE_LINE]), (COL_COLOR, [color])]
         )
         graph = Graph_Data(df)
         graph.build_graph()
@@ -318,8 +331,8 @@ def calculate_NUT_M(df:pd.DataFrame, name:str='NUT(M)', color:str="顏色_8"):
     else:
         df = process_df_data(
             df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+            columns_name=[COL_START_X, COL_START_Y, COL_END_X, COL_END_Y],
+            conditions=[(COL_NAME, [ETYPE_LINE]), (COL_COLOR, [color])]
         )
         graph = Graph_Data(df)
         graph.build_graph()
@@ -353,11 +366,11 @@ def calculate_S_Gland(df:pd.DataFrame, name:str='S Gland', color:str="顏色_142
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
     
 def calculate_L_Gland(df:pd.DataFrame, name:str='L Gland', color:str="顏色_11"):
     """
@@ -377,11 +390,11 @@ def calculate_L_Gland(df:pd.DataFrame, name:str='L Gland', color:str="顏色_11"
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
     
 def calculate_GASKET(df:pd.DataFrame, name:str='GASKET', color:str="顏色_165"):
     """
@@ -401,11 +414,11 @@ def calculate_GASKET(df:pd.DataFrame, name:str='GASKET', color:str="顏色_165")
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
     
 def calculate_VCR_Tee(df:pd.DataFrame, name:str='VCR Tee', color:str="顏色_7"):
     """
@@ -425,11 +438,11 @@ def calculate_VCR_Tee(df:pd.DataFrame, name:str='VCR Tee', color:str="顏色_7")
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['填充線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_HATCH])]
+        return df[COL_COUNT].sum()
     
 def calculate_VCR_U_Tee(df:pd.DataFrame, name:str='VCR 正 Tee', color:str="顏色_84"):
     """
@@ -449,11 +462,11 @@ def calculate_VCR_U_Tee(df:pd.DataFrame, name:str='VCR 正 Tee', color:str="顏�
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
 
 def calculate_Union_R_Tee(df:pd.DataFrame, name:str='Union R.Tee', color:str="顏色_171"):
     """
@@ -473,11 +486,11 @@ def calculate_Union_R_Tee(df:pd.DataFrame, name:str='Union R.Tee', color:str="�
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['填充線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_HATCH])]
+        return df[COL_COUNT].sum()
     
 def calculate_Union_Tee(df:pd.DataFrame, name:str='Union Tee', color:str="顏色_241"):
     """
@@ -497,11 +510,11 @@ def calculate_Union_Tee(df:pd.DataFrame, name:str='Union Tee', color:str="顏色
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
     
 def calculate_Gauge(df:pd.DataFrame, name:str='Gauge', color:str="顏色_40"):
     """
@@ -521,11 +534,11 @@ def calculate_Gauge(df:pd.DataFrame, name:str='Gauge', color:str="顏色_40"):
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['圓'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_CIRCLE])]
+        return df[COL_COUNT].sum()
 
 def calculate_Union(df:pd.DataFrame, name:str='Union', color:str="顏色_67"):
     """
@@ -545,11 +558,11 @@ def calculate_Union(df:pd.DataFrame, name:str='Union', color:str="顏色_67"):
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
 
 def calculate_Reducer_Union(df:pd.DataFrame, name:str='Reducer Union', color:str="顏色_211"):
     """
@@ -569,11 +582,11 @@ def calculate_Reducer_Union(df:pd.DataFrame, name:str='Reducer Union', color:str
     else:
         df = process_df_data(
             df,
-            columns_name=['計數', '名稱'],
-            conditions=[('出圖型式', [color])]
+            columns_name=[COL_COUNT, COL_NAME],
+            conditions=[(COL_COLOR, [color])]
         )
-        df = df[df['名稱'].isin(['聚合線'])]
-        return df['計數'].sum()
+        df = df[df[COL_NAME].isin([ETYPE_POLYLINE])]
+        return df[COL_COUNT].sum()
 
 def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
     """
@@ -594,8 +607,8 @@ def calculate_hose(df:pd.DataFrame, name:str='hose', color:str="顏色_4"):
     
     hose_df = process_df_data(
         df,
-        columns_name=['中心點 X', '中心點 Y'],
-        conditions=[('出圖型式', [color]), ('名稱', ['弧'])]
+        columns_name=[COL_CENTER_X, COL_CENTER_Y],
+        conditions=[(COL_COLOR, [color]), (COL_NAME, [ETYPE_ARC])]
     )
 
     if hose_df.empty:
@@ -629,8 +642,8 @@ def calculate_CAP(df:pd.DataFrame, name:str='CAP', color:str="顏色_37"):
     else:
         df = process_df_data(
             df,
-            columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-            conditions=[('名稱', ['線']), ('出圖型式', [color])]
+            columns_name=[COL_START_X, COL_START_Y, COL_END_X, COL_END_Y],
+            conditions=[(COL_NAME, [ETYPE_LINE]), (COL_COLOR, [color])]
         )
         graph = Graph_Data(df)
         graph.build_graph()
@@ -660,13 +673,13 @@ def calculate_line(df:pd.DataFrame, color:str="顏色_30"):
     """
     lines_df = process_df_data(
         df,
-        columns_name=['起點 X', '起點 Y', '終點 X', '終點 Y'],
-        conditions=[('名稱', ['線', '填充線', '聚合線']), ('出圖型式', [color])]
+        columns_name=[COL_START_X, COL_START_Y, COL_END_X, COL_END_Y],
+        conditions=[(COL_NAME, [ETYPE_LINE, ETYPE_HATCH, ETYPE_POLYLINE]), (COL_COLOR, [color])]
     )
     lengths_df = process_df_data(
         df,
-        columns_name=['位置 X', '位置 Y', '值', '旋轉'],
-        conditions=[('名稱', ['文字', '多行文字'])]
+        columns_name=[COL_POS_X, COL_POS_Y, COL_VALUE, COL_ROTATION],
+        conditions=[(COL_NAME, [ETYPE_TEXT, ETYPE_MTEXT])]
     )
     graph = Graph_Data(lines_df, lengths_df)
     graph.build_graph()
@@ -729,7 +742,7 @@ def generate_graph_report(graph:nx.Graph):
     for comp_idx, component in enumerate(connected_components):
         label = f"區塊 {comp_idx + 1}"
         subgraph = graph.subgraph(component)
-        comp_length = sum([d.get('length', 0) for u, v, d in subgraph.edges(data=True)])
+        comp_length = sum([d.get(EDGE_LENGTH, 0) for u, v, d in subgraph.edges(data=True)])
         bom_records.append({
             "ENT DESCRIPTION": label,
             "length": comp_length
@@ -752,56 +765,172 @@ def generate_graph_report(graph:nx.Graph):
     print(final_table.to_markdown(index=False))
 
 
-def visualize_graph_components(G:nx.Graph, highlight_points:list=None):
+def visualize_graph_components(G:nx.Graph, highlight_points:list=None, filter_block_ids:list=None, components_info:list=None):
     """
-    使用 Matplotlib 視覺化管網的連通分群。
+    使用 Plotly 視覺化管網的連通分群，支援互動式 Hover 與篩選。
 
     Args:
         G (nx.Graph): NetworkX 圖物件。
         highlight_points (list, optional): 需要特別標示的點座標列表 [(x, y), ...]。
+        filter_block_ids (list, optional): 僅顯示指定 Block ID 的線段，None 表示全部顯示。
+        components_info (list, optional): 元件資訊列表 [(x, y, name), ...]。
 
     Returns:
-        matplotlib.figure.Figure: 繪製完成的管網視覺化圖表物件。
+        plotly.graph_objects.Figure: 繪製完成的管網互動式視覺化圖表物件。
     """
-    fig, ax = plt.subplots(figsize=(16, 9))
-    pos = {node: (node[0], node[1]) for node in G.nodes()}
+    fig = go.Figure()
+
+    # 固定色盤，確保每次渲染顏色一致
+    COLORS = [
+        '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf',
+        '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+        '#c49c94', '#f7b6d2', '#c7c7c7', '#dbdb8d', '#9edae5',
+    ]
 
     # 優先檢查邊屬性中的 block_id，若無則使用連通分群作為預設分群方式
-    edge_blocks = nx.get_edge_attributes(G, 'block_id')
-    
+    edge_blocks = nx.get_edge_attributes(G, EDGE_BLOCK_ID)
+
     if edge_blocks:
-        # 根據 block_id 將邊分組
         blocks = {}
         for (u, v), b_id in edge_blocks.items():
             blocks.setdefault(b_id, []).append((u, v))
-        components_edges = list(blocks.values())
     else:
         components = list(nx.connected_components(G))
-        components_edges = [list(G.subgraph(c).edges()) for c in components]
+        blocks = {i+1: list(G.subgraph(c).edges()) for i, c in enumerate(components)}
 
-    print(f"將 {len(components_edges)} 個區塊繪製到圖表上...")
-    for edges in components_edges:
-        color = (random.random(), random.random(), random.random())
-        nodes = set([n for e in edges for n in e])
-        
-        # 繪製節點與邊，明確指定繪圖軸為 ax
-        nx.draw_networkx_nodes(G, pos=pos, nodelist=list(nodes), node_color=[color], node_size=15, ax=ax)
-        nx.draw_networkx_edges(G, pos=pos, edgelist=edges, edge_color=color, width=1.5, ax=ax)
+    # 套用 Block ID 篩選
+    if filter_block_ids and len(filter_block_ids) > 0:
+        blocks = {k: v for k, v in blocks.items() if k in filter_block_ids}
 
-        # 標註線段長度標籤
-        edge_labels = { (u, v): f"{G[u][v].get('length', 0):.0f}" for u, v in edges if G[u][v].get('length', 0) > 0 }
-        nx.draw_networkx_edge_labels(G, pos=pos, edge_labels=edge_labels, font_size=8, font_color=color, ax=ax)
+    print(f"將 {len(blocks)} 個區塊繪製到圖表上...")
+
+    global_line_idx = 0
+    for block_id in sorted(blocks.keys()):
+        edges = blocks[block_id]
+        color = COLORS[(block_id - 1) % len(COLORS)]
+
+        # 收集此 block 中所有線段的座標與 hover 資訊
+        x_vals, y_vals = [], []
+        customdata_list = []
+
+        for u, v in edges:
+            line_id = G[u][v].get(EDGE_LINE_ID, '')
+            length = G[u][v].get(EDGE_LENGTH, 0)
+
+            x_vals.extend([u[0], v[0], None])
+            y_vals.extend([u[1], v[1], None])
+
+            # 為起點與終點都附上相同的線段資訊，None 分隔點用空字串
+            info = [
+                str(global_line_idx),   # 0: Line #
+                str(block_id),          # 1: Block ID
+                str(line_id),           # 2: Line ID
+                f"{length:.1f}",        # 3: Length
+                f"{u[0]:.2f}",          # 4: Start X
+                f"{u[1]:.2f}",          # 5: Start Y
+                f"{v[0]:.2f}",          # 6: End X
+                f"{v[1]:.2f}",          # 7: End Y
+            ]
+            customdata_list.extend([info, info, ['']*8])
+            global_line_idx += 1
+
+        fig.add_trace(go.Scatter(
+            x=x_vals,
+            y=y_vals,
+            mode='lines+markers',
+            line=dict(color=color, width=3),
+            marker=dict(size=5, color=color),
+            name=f"Block {block_id}",
+            legendgroup=f"block_{block_id}",
+            customdata=customdata_list,
+            hovertemplate=(
+                "<b>Line #%{customdata[0]}</b><br>"
+                "Block ID: %{customdata[1]}<br>"
+                "Line ID: %{customdata[2]}<br>"
+                "長度: %{customdata[3]} mm<br>"
+                "起點: (%{customdata[4]}, %{customdata[5]})<br>"
+                "終點: (%{customdata[6]}, %{customdata[7]})"
+                "<extra></extra>"
+            ),
+        ))
+
+        # 在每條線段中點標註長度
+        for u, v in edges:
+            length = G[u][v].get(EDGE_LENGTH, 0)
+            if length > 0:
+                mid_x = (u[0] + v[0]) / 2
+                mid_y = (u[1] + v[1]) / 2
+                fig.add_annotation(
+                    x=mid_x, y=mid_y,
+                    text=f"{length:.0f}",
+                    showarrow=False,
+                    font=dict(size=9, color=color),
+                    bgcolor="rgba(255,255,255,0.75)",
+                    borderpad=1,
+                )
 
     # 繪製高亮點 (例如角點)
     if highlight_points:
         hx = [p[0] for p in highlight_points]
         hy = [p[1] for p in highlight_points]
-        ax.scatter(hx, hy, color='red', s=50, marker='o', label='Highlighted Points', edgecolors='black', zorder=10)
-        ax.legend()
+        fig.add_trace(go.Scatter(
+            x=hx, y=hy,
+            mode='markers',
+            marker=dict(size=12, color='red', symbol='circle',
+                        line=dict(color='black', width=1.5)),
+            name='轉角點 (Corner)',
+            hovertemplate="<b>轉角點</b><br>座標: (%{x:.2f}, %{y:.2f})<extra></extra>",
+        ))
 
-    ax.set_title(f"Visualized Systems (Total Blocks: {len(components_edges)})")
-    ax.set_aspect('equal')
-    ax.grid(True)
+    # 繪製元件圖示
+    if components_info:
+        print(f"[INFO] 正在繪製 {len(components_info)} 個元件圖示到圖表上")
+        
+        # 1. 根據元件名稱分組
+        grouped_comps = {}
+        for cx, cy, cname in components_info:
+            grouped_comps.setdefault(cname, {"x": [], "y": []})
+            grouped_comps[cname]["x"].append(cx)
+            grouped_comps[cname]["y"].append(cy)
+            
+        # 2. 定義變化用的圖示與顏色集
+        symbols = ['diamond', 'square', 'circle', 'triangle-up', 'triangle-down', 'cross', 'x', 'pentagon', 'hexagram', 'star']
+        colors = [
+            '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+            '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe',
+            '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000'
+        ]
+        
+        # 3. 為每種元件建立獨立的 trace (模組化，可在圖例單獨開關)
+        for i, (cname, coords) in enumerate(grouped_comps.items()):
+            fig.add_trace(go.Scatter(
+                x=coords["x"], 
+                y=coords["y"],
+                mode='markers',  # 移除文字標籤避免太雜亂，改用 hover 顯示
+                marker=dict(
+                    size=12,  # 尺寸縮小 (原本22)
+                    color=colors[i % len(colors)],
+                    symbol=symbols[i % len(symbols)],
+                    line=dict(color='black', width=1)
+                ),
+                name=f'{cname} ({len(coords["x"])})',  # 圖例上顯示數量
+                customdata=[cname]*len(coords["x"]),
+                hovertemplate="<b>%{customdata}</b><br>座標: (%{x:.2f}, %{y:.2f})<extra></extra>",
+            ))
+
+    fig.update_layout(
+        title=f"管網佈局圖 (共 {len(blocks)} 個區塊)",
+        xaxis=dict(title="X", scaleanchor="y", scaleratio=1),
+        yaxis=dict(title="Y"),
+        hovermode='closest',
+        showlegend=True,
+        legend=dict(title="區塊 (Block)", x=1.02, y=1, bordercolor="grey", borderwidth=1),
+        height=700,
+        template='plotly_white',
+        dragmode='pan',
+    )
+
     return fig
 
 def generate_component_report(df: pd.DataFrame, report_items: list):
@@ -851,7 +980,7 @@ def generate_component_report(df: pd.DataFrame, report_items: list):
 
         try:
             qty = func(df)
-            results.append({"Component": name, "QTY": int(qty)})
+            results.append({DISP_COMPONENT: name, DISP_QTY: int(qty)})
         except Exception as e:
             print(f"計算 {name} 時發生錯誤: {e}")
 
@@ -889,12 +1018,12 @@ def export_to_csv(
     line_data = []
     for u, v, d in graph.edges(data=True):
         line_data.append({
-            "block_id": d.get('block_id', 1),
-            "start_x": u[0],
-            "start_y": u[1],
-            "end_x": v[0],
-            "end_y": v[1],
-            "length": d.get('length', 0)
+            DISP_BLOCK_ID: d.get(EDGE_BLOCK_ID, 1),
+            DISP_START_X: u[0],
+            DISP_START_Y: u[1],
+            DISP_END_X: v[0],
+            DISP_END_Y: v[1],
+            DISP_LENGTH: d.get(EDGE_LENGTH, 0)
         })
     df_lines = pd.DataFrame(line_data)
     if download:
@@ -902,7 +1031,7 @@ def export_to_csv(
 
     # 2. 產出元件報表 (包含轉角點數量)
     df_comp_final = component_df.copy()
-    corner_row = pd.DataFrame([{"Component": "Corner Points", "QTY": len(corner_points)}])
+    corner_row = pd.DataFrame([{DISP_COMPONENT: "Corner Points", DISP_QTY: len(corner_points)}])
     df_comp_final = pd.concat([df_comp_final, corner_row], ignore_index=True)
     if download:
         df_comp_final.to_csv(component_path, index=False, encoding='utf-8-sig')

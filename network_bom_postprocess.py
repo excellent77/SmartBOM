@@ -18,8 +18,14 @@ import numpy as np
 import pandas as pd
 
 from dxf_reader import read_dwg
-
-
+from columns import (
+    COL_NAME, COL_COLOR, COL_COUNT,
+    COL_START_X, COL_START_Y, COL_END_X, COL_END_Y,
+    COL_CENTER_X, COL_CENTER_Y,
+    COL_POS_X, COL_POS_Y, COL_VALUE, COL_ROTATION, COL_RADIUS,
+    ETYPE_LINE, ETYPE_POLYLINE, ETYPE_CIRCLE, ETYPE_ELLIPSE,
+    ETYPE_ARC, ETYPE_TEXT, ETYPE_MTEXT, ETYPE_HATCH,
+)
 # 這份映射獨立屬於本程式，可直接在此修改，不依賴其他後處理程式。
 COLOR_COMPONENT_MAP= {
     "顏色_181": {"name": "Ball Valve"},
@@ -51,8 +57,8 @@ COLOR_COMPONENT_MAP= {
     "顏色_252": {"name": "IGNORE"},  # 表上註記「不須列入計算的材料」，應在後製時直接排除，不當成 BOM 品項
 }
 
-TEXT_TYPES = {"文字", "多行文字", "TEXT", "MTEXT"}
-GEOMETRY_TYPES = {"線", "聚合線", "圓", "弧", "橢圓", "填充線", "LINE", "CIRCLE", "ARC", "ELLIPSE"}
+TEXT_TYPES = {ETYPE_TEXT, ETYPE_MTEXT, "TEXT", "MTEXT"}
+GEOMETRY_TYPES = {ETYPE_LINE, ETYPE_POLYLINE, ETYPE_CIRCLE, ETYPE_ARC, ETYPE_ELLIPSE, ETYPE_HATCH, "LINE", "CIRCLE", "ARC", "ELLIPSE"}
 
 
 @dataclass
@@ -126,8 +132,8 @@ def _sample_circle(center: tuple[float, float], radius: float, steps: int = 72) 
 
 
 def _sample_arc(row: pd.Series, center: tuple[float, float], radius: float) -> np.ndarray:
-    start = _point(row, ("起點 X",), ("起點 Y",))
-    end = _point(row, ("終點 X",), ("終點 Y",))
+    start = _point(row, (COL_START_X,), (COL_START_Y,))
+    end = _point(row, (COL_END_X,), (COL_END_Y,))
     if start and end:
         start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
         end_angle = math.atan2(end[1] - center[1], end[0] - center[0])
@@ -145,24 +151,24 @@ def _sample_arc(row: pd.Series, center: tuple[float, float], radius: float) -> n
 
 
 def row_to_geometry(index: int, row: pd.Series) -> Geometry | None:
-    kind, color = str(row.get("名稱", "")).strip(), str(row.get("出圖型式", "")).strip()
+    kind, color = str(row.get(COL_NAME, "")).strip(), str(row.get(COL_COLOR, "")).strip()
     if kind not in GEOMETRY_TYPES or not color:
         return None
-    start = _point(row, ("起點 X",), ("起點 Y",))
-    end = _point(row, ("終點 X",), ("終點 Y",))
-    center = _point(row, ("中心點 X",), ("中心點 Y",))
-    radius = _number(row, "半徑")
-    if kind in {"線", "聚合線", "LINE"} and start and end:
+    start = _point(row, (COL_START_X,), (COL_START_Y,))
+    end = _point(row, (COL_END_X,), (COL_END_Y,))
+    center = _point(row, (COL_CENTER_X,), (COL_CENTER_Y,))
+    radius = _number(row, COL_RADIUS)
+    if kind in {ETYPE_LINE, ETYPE_POLYLINE, "LINE"} and start and end:
         points = np.asarray([start, end], dtype=float)
-    elif kind in {"圓", "CIRCLE"} and center and radius is not None:
+    elif kind in {ETYPE_CIRCLE, "CIRCLE"} and center and radius is not None:
         points = _sample_circle(center, abs(radius))
-    elif kind in {"弧", "ARC"} and center and radius is not None:
+    elif kind in {ETYPE_ARC, "ARC"} and center and radius is not None:
         points = _sample_arc(row, center, abs(radius))
-    elif kind == "填充線" and start and end:
+    elif kind == ETYPE_HATCH and start and end:
         x1, y1 = start
         x2, y2 = end
         points = np.asarray([(x1, y1), (x2, y1), (x2, y2), (x1, y2), (x1, y1)], dtype=float)
-    elif kind in {"橢圓", "ELLIPSE"} and center:
+    elif kind in {ETYPE_ELLIPSE, "ELLIPSE"} and center:
         points = np.asarray([center], dtype=float)
     else:
         return None
@@ -179,13 +185,13 @@ def clean_dxf_text(value: str) -> str:
 def extract_texts(df: pd.DataFrame) -> list[dict]:
     texts = []
     for index, row in df.iterrows():
-        if str(row.get("名稱", "")).strip() not in TEXT_TYPES:
+        if str(row.get(COL_NAME, "")).strip() not in TEXT_TYPES:
             continue
-        position = _point(row, ("位置 X", "位置 X1", "X"), ("位置 Y", "位置 Y1", "Y"))
+        position = _point(row, (COL_POS_X, "位置 X1", "X"), (COL_POS_Y, "位置 Y1", "Y"))
         if position is None:
             continue
         value = ""
-        for column in ("值", "內容"):
+        for column in (COL_VALUE, "內容"):
             candidate = row.get(column)
             if pd.notna(candidate) and str(candidate).strip():
                 value = clean_dxf_text(candidate)
