@@ -1,4 +1,4 @@
-"""以去重、圖元組鄰接關係及整數規劃產生工程 BOM。
+"""以去重、圖元組鄰接關係及二元整數線性規劃（ILP）產生工程 BOM。
 
 輸入 DXF/DWG 時會直接呼叫 dxf_reader.read_dwg()。顏色 30 視為 Tube，
 每條管線圖元各自成組；其餘非文字圖元依顏色及幾何連通性聚類成元件。
@@ -13,7 +13,7 @@ from typing import Sequence
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import Bounds, LinearConstraint, milp
+from scipy.optimize import Bounds, LinearConstraint, milp as ilp
 from scipy.sparse import lil_matrix
 
 from dxf_reader import read_dwg
@@ -27,7 +27,6 @@ SEGMENT_INTERSECTION_EPSILON = 1e-9
 CIRCLE_SAMPLE_STEPS = 72
 ARC_SAMPLE_STEPS = 36
 MIN_ARC_SAMPLE_STEPS = 8
-DISTANCE_SCORE_WEIGHT = 100.0
 COMPONENT_SIZE_SCORE_WEIGHT = 1.0
 TUBE_COLOR = "顏色_30"
 BOM_OUTPUT_SUFFIX = "_bom.csv"
@@ -64,6 +63,7 @@ COLOR_COMPONENT_MAP = {
     "顏色_40": {"name": "SWG Gauge(背接式)"},
     "顏色_192": {"name": "VCR Gauge(背接式)"},
     "顏色_252": {"name": "IGNORE"},  # 表上註記「不須列入計算的材料」，應在後製時直接排除，不當成 BOM 品項
+    "顏色_7": {"name": "IGNORE"},  # 表上註記「不須列入計算的材料」，應在後製時直接排除，不當成 BOM 品項
 }
 
 TEXT_TYPES = {"文字", "多行文字", "TEXT", "MTEXT"}
@@ -348,24 +348,16 @@ def _format_number(value: float) -> str:
     return str(int(value)) if math.isclose(value, round(value)) else f"{value:g}"
 
 
-def _text_match_score(
-    component_position: tuple[float, float],
-    text_position: tuple[float, float],
-) -> tuple[float, float]:
-    """使用 test.py 的純距離公式，不加入元件名稱關鍵字分數。"""
-    distance = math.dist(component_position, text_position)
-    return DISTANCE_SCORE_WEIGHT / (1.0 + distance), distance
-
-
 def _best_text_match(point: tuple[float, float], texts: Sequence[dict], pattern: re.Pattern | None = None):
+    """依歐氏距離選最近文字；同距離時選原始列號較小者。"""
     candidates = []
     for text in texts:
         match = pattern.search(text["text"]) if pattern else None
         if pattern is not None and match is None:
             continue
-        score, distance = _text_match_score(point, text["position"])
-        candidates.append((score, distance, text, match))
-    return max(candidates, key=lambda item: (item[0], -item[1], -item[2]["index"])) if candidates else None
+        distance = math.dist(point, text["position"])
+        candidates.append((distance, text, match))
+    return min(candidates, key=lambda item: (item[0], item[1]["index"])) if candidates else None
 
 
 def _normalize_size(value: str) -> str:
@@ -499,20 +491,23 @@ def assign_tube_descriptions(
     texts: Sequence[dict],
     component_text_matches: dict[int, dict],
 ) -> tuple[dict[int, dict], dict[int, str]]:
-    """以 MILP 同時決定 Tube 文字配對與各連通段代表尺寸。
+    """以單次 ILP 同時決定 Tube 文字配對與各連通段代表尺寸。
 
-    一般元件文字的尺寸出現次數會加入目標分數；同一連通段配對到的
+    最小化總配對距離減去一般元件文字的尺寸支持分數；同一連通段配對到的
     Tube 必須採用相同的 ``(尺寸, 材質與表面處理)`` 規格。
+    每段合法 Tube 文字必須恰好配對一次，每個 Tube 至多接受一段文字；
+    若無法滿足全部配對與規格限制，回報無可行解。
     """
     tube_groups = [group for group in groups if group.color == TUBE_COLOR]
-    if not tube_groups:
-        return {}, {}
-
     pending = [
         (text, description)
         for text in texts
         if (description := _tube_description(text["text"])) is not None
     ]
+    if not tube_groups:
+        if pending:
+            raise RuntimeError("Tube 文字整數規劃無可行解：存在合法 Tube 規格文字，但沒有 Tube 圖元可配對")
+        return {}, {}
 
     # Reducer 類元件不參與分段。
     non_boundary_nodes = {group.group_id for group in groups if not _is_size_boundary(group)}
@@ -549,12 +544,12 @@ def assign_tube_descriptions(
     z_index = {pair: z_offset + position for position, pair in enumerate(z_pairs)}
     variable_count = len(x_index) + len(y_index) + len(z_index)
     objective = np.zeros(variable_count, dtype=float)
-    score_cache: dict[tuple[int, int], tuple[float, float]] = {}
+    distance_cache: dict[tuple[int, int], float] = {}
     for text_id, (text, _description) in enumerate(pending):
         for tube_id in tube_ids:
-            score, distance = _text_match_score(tube_by_id[tube_id].center, text["position"])
-            score_cache[text_id, tube_id] = score, distance
-            objective[x_index[text_id, tube_id]] = -score
+            distance = math.dist(tube_by_id[tube_id].center, text["position"])
+            distance_cache[text_id, tube_id] = distance
+            objective[x_index[text_id, tube_id]] = distance
 
     size_occurrences: dict[tuple[int, str], int] = {}
     for group_id, match in component_text_matches.items():
@@ -574,9 +569,9 @@ def assign_tube_descriptions(
         lower_bounds.append(lower)
         upper_bounds.append(upper)
 
-    # 每段文字、每條 Tube 都至多使用一次。
+    # 每段合法 Tube 文字恰好配對一次，每條 Tube 至多接受一段文字。
     for text_id in range(len(pending)):
-        add_constraint({x_index[text_id, tube_id]: 1.0 for tube_id in tube_ids}, 0.0, 1.0)
+        add_constraint({x_index[text_id, tube_id]: 1.0 for tube_id in tube_ids}, 1.0, 1.0)
     for tube_id in tube_ids:
         add_constraint({x_index[text_id, tube_id]: 1.0 for text_id in range(len(pending))}, 0.0, 1.0)
 
@@ -612,32 +607,12 @@ def assign_tube_descriptions(
             matrix[row_id, variable_id] = coefficient
     base_constraint = LinearConstraint(matrix.tocsr(), lower_bounds, upper_bounds)
 
-    # 先求可行的最大配對數，避免直接最小化距離時模型選擇完全不配對。
-    cardinality_objective = np.zeros(variable_count, dtype=float)
-    for variable_id in x_index.values():
-        cardinality_objective[variable_id] = -1.0
-    cardinality_result = milp(
-        c=cardinality_objective,
-        integrality=np.ones(variable_count, dtype=np.uint8),
-        bounds=Bounds(0.0, 1.0),
-        constraints=base_constraint,
-        options={"disp": False},
-    )
-    if not cardinality_result.success or cardinality_result.x is None:
-        raise RuntimeError(f"Tube 文字整數規劃無法求解：{cardinality_result.message}")
-
-    maximum_matches = round(sum(cardinality_result.x[variable_id] for variable_id in x_index.values()))
-    cardinality_row = lil_matrix((1, variable_count), dtype=float)
-    for variable_id in x_index.values():
-        cardinality_row[0, variable_id] = 1.0
-    result = milp(
+    # 所有變數均為 0–1；使用 SciPy 的通用 MILP 求解器求解此 ILP。
+    result = ilp(
         c=objective,
         integrality=np.ones(variable_count, dtype=np.uint8),
         bounds=Bounds(0.0, 1.0),
-        constraints=[
-            base_constraint,
-            LinearConstraint(cardinality_row.tocsr(), maximum_matches, maximum_matches),
-        ],
+        constraints=base_constraint,
         options={"disp": False},
     )
     if not result.success or result.x is None:
@@ -652,12 +627,11 @@ def assign_tube_descriptions(
         for tube_id in tube_ids:
             if result.x[x_index[text_id, tube_id]] <= 0.5:
                 continue
-            score, distance = score_cache[text_id, tube_id]
+            distance = distance_cache[text_id, tube_id]
             assignments[tube_id] = {
                 **description,
                 "text": text["text"],
                 "text_index": text["index"],
-                "score": score,
                 "distance": distance,
             }
     node_sizes = {
@@ -729,8 +703,8 @@ def assign_nearest_text_to_groups(groups: Sequence[EntityGroup], texts: Sequence
             continue
         best = _best_text_match(group.center, size_texts)
         if best:
-            score, distance, text, _ = best
-            result[group.group_id] = {**text, "score": score, "distance": distance}
+            distance, text, _ = best
+            result[group.group_id] = {**text, "distance": distance}
     return result
 
 
@@ -774,7 +748,7 @@ def fill_by_integer_programming(
     adjacency: dict[int, set[int]],
     texts: Sequence[dict],
 ) -> tuple[dict[int, dict], dict[int, dict]]:
-    """以 MILP 決定 Tube 配對及分段尺寸，再套用既有特殊元件規則。"""
+    """以 ILP 決定 Tube 配對及分段尺寸，再套用既有特殊元件規則。"""
     nearest_texts = assign_nearest_text_to_groups(groups, texts)
     tube_descriptions, node_uniform_size = assign_tube_descriptions(
         groups, adjacency, texts, nearest_texts
@@ -807,7 +781,7 @@ def fill_by_integer_programming(
             else:
                 group.material = "SUS316L"
 
-    # 尺寸直接使用 MILP 選出的連通段代表尺寸，不再進行眾數投票。
+    # 尺寸直接使用 ILP 選出的連通段代表尺寸，不再進行眾數投票。
     for group in groups:
         if _is_size_boundary(group):
             continue
@@ -833,7 +807,7 @@ def fill_by_integer_programming(
         elif _is_hose(group):
             nearest = _best_text_match(group.center, texts, HOSE_RE)
             if nearest:
-                _, _, text, match = nearest
+                _, text, match = nearest
                 group.size = _normalize_size(match.group("size"))
                 group.quantity = float(match.group("length"))
                 group.matched_text = text["text"]
@@ -859,7 +833,7 @@ def fill_by_integer_programming(
         else:
             nearest = _best_text_match(group.center, texts, REDUCER_RE)
             if nearest:
-                _, _, text, match = nearest
+                _, text, match = nearest
                 group.size = f'{_normalize_size(match.group("first"))}x{_normalize_size(match.group("second"))}'
                 group.matched_text = text["text"]
             elif neighbor_sizes:
