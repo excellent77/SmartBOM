@@ -15,12 +15,14 @@ from smartbom_bom.config import (
     BOM_OUTPUT_SUFFIX,
     DETAILS_OUTPUT_SUFFIX,
 )
+from smartbom_bom.visualization import build_debug_figure, figure_to_html
 
 
 SUPPORTED_EXTENSIONS = {".dxf", ".dwg", ".csv"}
 EMPTY_BOM = pd.DataFrame(columns=["品名", "尺寸", "材質", "數量"])
 EMPTY_DETAILS = pd.DataFrame()
 EMPTY_ADJACENCY = pd.DataFrame()
+EMPTY_FIGURE = ""
 
 
 def _output_paths(source: Path) -> list[str]:
@@ -34,13 +36,13 @@ def _output_paths(source: Path) -> list[str]:
 
 def analyze_uploaded_file(
     file_path: str | Path | None,
-) -> tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame, list[str]]:
-    """分析 Gradio 上傳檔案並回傳畫面資料及下載路徑。
+) -> tuple[str, pd.DataFrame, pd.DataFrame, pd.DataFrame, str, list[str]]:
+    """分析 Gradio 上傳檔案並回傳畫面資料、互動檢視圖及下載路徑。
 
     此函式不依賴 Gradio 型別，因此可以獨立做單元測試，也能被其他 UI 重用。
     """
     if not file_path:
-        return "請先上傳 DXF、DWG 或向量 CSV。", EMPTY_BOM, EMPTY_DETAILS, EMPTY_ADJACENCY, []
+        return "請先上傳 DXF、DWG 或向量 CSV。", EMPTY_BOM, EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_FIGURE, []
 
     source = Path(str(file_path))
     if source.suffix.casefold() not in SUPPORTED_EXTENSIONS:
@@ -50,12 +52,17 @@ def analyze_uploaded_file(
             EMPTY_BOM,
             EMPTY_DETAILS,
             EMPTY_ADJACENCY,
+            EMPTY_FIGURE,
             [],
         )
 
     try:
         # 上傳檔位於 Gradio 暫存目錄；報表寫在同一目錄，不會覆寫專案原始資料。
-        result = BomApplicationService.create_default().run(source, write_reports=True)
+        # 自行串接載入、分析與輸出，保留向量表供互動檢視圖重畫原圖。
+        service = BomApplicationService.create_default()
+        vectors = service.loader.load(source)
+        result = service.analyze(vectors)
+        service.writer.write(source, result)
         removed_rows = result.details.attrs.get("removed_duplicate_rows", [])
         adjacency_for_display = result.adjacency.reset_index()
         status = (
@@ -65,11 +72,18 @@ def analyze_uploaded_file(
             f"- 鄰接矩陣：{result.adjacency.shape[0]} × {result.adjacency.shape[1]}  \n"
             f"- 去除同色重複線段：{len(removed_rows)} 條"
         )
+        try:
+            figure = figure_to_html(build_debug_figure(vectors, result.details, result.bom))
+        except Exception as exc:
+            # 檢視圖只是除錯輔助，畫不出來不應讓已完成的 BOM 一併失敗。
+            figure = EMPTY_FIGURE
+            status += f"  \n- ⚠️ 互動檢視圖產生失敗：{type(exc).__name__}: {exc}"
         return (
             status,
             result.bom,
             result.details,
             adjacency_for_display,
+            figure,
             _output_paths(source),
         )
     except Exception as exc:
@@ -78,6 +92,7 @@ def analyze_uploaded_file(
             EMPTY_BOM,
             EMPTY_DETAILS,
             EMPTY_ADJACENCY,
+            EMPTY_FIGURE,
             [],
         )
 
@@ -123,6 +138,12 @@ def create_interface() -> Any:
                 details_table = gr.Dataframe(interactive=False, wrap=True)
             with gr.Tab("鄰接矩陣"):
                 adjacency_table = gr.Dataframe(interactive=False, wrap=False)
+            with gr.Tab("互動檢視"):
+                gr.Markdown(
+                    "將滑鼠移到元件或管線上，可查看程式判定的品名、尺寸、材質與 BOM 合計數量；"
+                    "滾輪可縮放、拖曳可平移、雙擊還原；點選上方圖例可顯示或隱藏某一類元件的感應區。"
+                )
+                debug_plot = gr.HTML()
 
         downloads = gr.File(
             label="下載分析結果（BOM、明細、鄰接矩陣）",
@@ -131,7 +152,7 @@ def create_interface() -> Any:
         )
         clear_button = gr.Button("清除結果")
 
-        outputs = [status, bom_table, details_table, adjacency_table, downloads]
+        outputs = [status, bom_table, details_table, adjacency_table, debug_plot, downloads]
         upload.upload(
             fn=analyze_uploaded_file,
             inputs=upload,
@@ -144,6 +165,7 @@ def create_interface() -> Any:
                 EMPTY_BOM,
                 EMPTY_DETAILS,
                 EMPTY_ADJACENCY,
+                EMPTY_FIGURE,
                 [],
             ),
             outputs=outputs,
