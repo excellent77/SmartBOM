@@ -21,7 +21,7 @@ HOVER_PAD_RATIO = 0.004
 COMPONENT_TARGET_PX = 32.0
 PLOT_WIDTH_RANGE = (1200.0, 6000.0)
 MIN_PLOT_HEIGHT = 420
-PLOT_MARGIN = {"l": 20, "r": 20, "t": 100, "b": 20}
+PLOT_MARGIN = {"l": 20, "r": 20, "t": 20, "b": 20}
 # 圖面文字相對於 DXF 字高的縮放；小於 1 可避免標註互相重疊或蓋住元件。
 TEXT_HEIGHT_SCALE = 0.65
 TEXT_FONT_RANGE = (7.0, 18.0)
@@ -119,7 +119,7 @@ def build_debug_figure(
     bom: pd.DataFrame,
     segments: Sequence | None = None,
 ) -> go.Figure:
-    """畫出原圖，並以連通塊顏色疊加可懸停的分析結果感應區。"""
+    """畫出原圖與連通塊標籤，並以不可見感應區提供元件 Hover。"""
     geometries = {
         int(index): geometry
         for index, row in df.iterrows()
@@ -216,36 +216,53 @@ def build_debug_figure(
         layer = 0 if row["品名"] == "IGNORE" else 1 if row["顏色"] == TUBE_COLOR else 2
         return layer, -area
 
-    seen_names: set[str] = set()
+    label_candidates: dict[int, list[np.ndarray]] = {}
     for _, polygon, row in sorted(regions, key=draw_order):
         name = str(row["品名"])
         ignored = name == "IGNORE"
         segment = segment_by_group.get(int(row["群組編號"]))
         if segment is not None:
+            label_candidates.setdefault(segment.segment_id, []).append(
+                polygon[:-1].mean(axis=0)
+            )
             rgb = tuple(int(segment.color[index:index + 2], 16) for index in (1, 3, 5))
-            legend_name = segment.code
         else:
             rgb = (120, 120, 120) if ignored else _color_rgb(row["顏色"])
-            legend_name = "尺寸邊界"
         figure.add_trace(go.Scatter(
             x=polygon[:, 0], y=polygon[:, 1], mode="lines",
             line={"color": _css(rgb, 0.55), "width": 1, "dash": "dot"},
             fill="toself", fillcolor=_css(rgb, 0.02 if ignored else 0.10),
             hoveron="fills", hoverinfo="text", text=_hover_text(row, bom_quantity, segment),
-            name=legend_name,
-            legendgroup=segment.code if segment is not None else legend_name,
-            showlegend=legend_name not in seen_names,
+            showlegend=False,
         ))
-        seen_names.add(legend_name)
+
+    # 標籤放在最接近該連通塊幾何中心的實際元件上，避免漂浮在空白處。
+    label_x: list[float] = []
+    label_y: list[float] = []
+    label_text: list[str] = []
+    for segment in segments or []:
+        candidates = label_candidates.get(segment.segment_id, [])
+        if not candidates:
+            continue
+        points = np.vstack(candidates)
+        center = points.mean(axis=0)
+        position = min(points, key=lambda point: float(np.linalg.norm(point - center)))
+        label_x.append(float(position[0]))
+        label_y.append(float(position[1]))
+        label_text.append(f"<b>{segment.code}</b>")
+    if label_text:
+        figure.add_trace(go.Scatter(
+            x=label_x, y=label_y, text=label_text,
+            mode="text", textposition="top center",
+            textfont={"size": 14, "color": "#000000"},
+            hoverinfo="skip", showlegend=False, cliponaxis=False,
+        ))
 
     figure.update_layout(
         width=plot_width, height=plot_height, margin=PLOT_MARGIN,
         plot_bgcolor="white", paper_bgcolor="white", dragmode="pan",
         hoverlabel={"align": "left", "bgcolor": "white", "font": {"size": 13}},
-        legend={
-            "title": {"text": "連通塊"}, "groupclick": "togglegroup",
-            "orientation": "h", "x": 0, "xanchor": "left", "y": 1, "yanchor": "bottom",
-        },
+        showlegend=False,
         xaxis={"visible": False, "range": [float(low[0]), float(high[0])]},
         yaxis={"visible": False, "scaleanchor": "x", "scaleratio": 1},
     )

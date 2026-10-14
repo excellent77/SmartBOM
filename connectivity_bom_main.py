@@ -159,7 +159,8 @@ def create_interface() -> Any:
         with gr.Tabs():
             with gr.Tab("① 互動檢視與連通塊覆核"):
                 gr.Markdown(
-                    "原始圖元線色維持 DXF 顏色；半透明區塊依 Reducer 分段著色。"
+                    "原始圖元線色維持 DXF 顏色，連通塊仍依原配色標示；"
+                    "圖上黑色 C01、C02 標籤代表 Reducer 分段連通塊。"
                     "滑鼠停留時可查看元件完整資訊與所屬連通塊。"
                 )
                 debug_plot = gr.HTML(value=EMPTY_FIGURE)
