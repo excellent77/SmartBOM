@@ -55,7 +55,14 @@ class BomApplicationService:
         labels = [f"G{group.group_id}:{group.name}" for group in groups]
         matrix_df = pd.DataFrame(matrix, index=labels, columns=labels)
         matrix_df.index.name = "群組"
-        return BomAnalysisResult(bom=bom, details=details, adjacency=matrix_df)
+        return BomAnalysisResult(
+            bom=bom,
+            details=details,
+            adjacency=matrix_df,
+            groups=groups,
+            adjacency_map=adjacency,
+            texts=texts,
+        )
 
     def run(self, file_path: str | Path, write_reports: bool = True) -> BomAnalysisResult:
         """載入一個向量檔、執行分析，並依需求輸出 CSV。"""

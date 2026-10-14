@@ -6,6 +6,7 @@
 
 import html
 import math
+from typing import Sequence
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -47,6 +48,7 @@ def _css(rgb: tuple[int, int, int], alpha: float = 1.0) -> str:
 
 
 def _format_number(value: float) -> str:
+    """將數量顯示為簡潔的整數或浮點數。"""
     return str(int(value)) if math.isclose(value, round(value)) else f"{value:g}"
 
 
@@ -77,10 +79,19 @@ def _polygon_area(polygon: np.ndarray) -> float:
     return abs(float(np.dot(x[:-1], y[1:]) - np.dot(x[1:], y[:-1]))) / 2
 
 
-def _hover_text(row: pd.Series, bom_quantity: dict[tuple[str, str, str], object]) -> str:
+def _hover_text(
+    row: pd.Series,
+    bom_quantity: dict[tuple[str, str, str], object],
+    segment=None,
+) -> str:
+    """顯示元件完整分析資訊，並標示所屬連通塊。"""
     name, size, material = str(row["品名"]), str(row["尺寸"]), str(row["材質"])
     quantity = float(row["原始數量"])
     lines = [f"<b>G{row['群組編號']}：{name}</b>"]
+    if segment is not None:
+        lines.append(f"所屬連通塊：{segment.code}")
+    else:
+        lines.append("所屬連通塊：尺寸邊界")
     if name == "IGNORE":
         lines.append("不列入 BOM")
     else:
@@ -92,7 +103,7 @@ def _hover_text(row: pd.Series, bom_quantity: dict[tuple[str, str, str], object]
         lines.append(f"BOM 合計：{total}" if total is not None else "BOM 合計：未列入")
     if row["配對文字"]:
         lines.append(f"配對文字：{row['配對文字']}")
-    lines.append(f"顏色：{row['顏色']}｜圖元數：{row['圖元數']}")
+    lines.append(f"圖元顏色：{row['顏色']}｜圖元數：{row['圖元數']}")
     if row["備註"]:
         lines.append(f"備註：{row['備註']}")
     return "<br>".join(lines)
@@ -102,8 +113,13 @@ def _source_rows(value: object) -> list[int]:
     return [int(item) for item in str(value).split(",") if item.strip()]
 
 
-def build_debug_figure(df: pd.DataFrame, details: pd.DataFrame, bom: pd.DataFrame) -> go.Figure:
-    """畫出原圖，並為每個圖元組加上可懸停的分析結果感應區。"""
+def build_debug_figure(
+    df: pd.DataFrame,
+    details: pd.DataFrame,
+    bom: pd.DataFrame,
+    segments: Sequence | None = None,
+) -> go.Figure:
+    """畫出原圖，並以連通塊顏色疊加可懸停的分析結果感應區。"""
     geometries = {
         int(index): geometry
         for index, row in df.iterrows()
@@ -188,8 +204,11 @@ def build_debug_figure(df: pd.DataFrame, details: pd.DataFrame, bom: pd.DataFram
         (str(row["品名"]), str(row["尺寸"]), str(row["材質"])): row["數量"]
         for _, row in bom.iterrows()
     }
-    name_counts = pd.Series([str(row["品名"]) for _, _, row in regions]).value_counts()
-
+    segment_by_group = {
+        group_id: segment
+        for segment in (segments or [])
+        for group_id in segment.group_ids
+    }
     # 重疊時後畫者優先感應：依序為 IGNORE 外框、管線、元件（面積大的先畫），
     # 讓小元件不會被面板外框或穿過它的管線蓋住。
     def draw_order(item: tuple[float, np.ndarray, pd.Series]) -> tuple[int, float]:
@@ -201,23 +220,30 @@ def build_debug_figure(df: pd.DataFrame, details: pd.DataFrame, bom: pd.DataFram
     for _, polygon, row in sorted(regions, key=draw_order):
         name = str(row["品名"])
         ignored = name == "IGNORE"
-        rgb = (120, 120, 120) if ignored else _color_rgb(row["顏色"])
+        segment = segment_by_group.get(int(row["群組編號"]))
+        if segment is not None:
+            rgb = tuple(int(segment.color[index:index + 2], 16) for index in (1, 3, 5))
+            legend_name = segment.code
+        else:
+            rgb = (120, 120, 120) if ignored else _color_rgb(row["顏色"])
+            legend_name = "尺寸邊界"
         figure.add_trace(go.Scatter(
             x=polygon[:, 0], y=polygon[:, 1], mode="lines",
-            line={"color": _css(rgb, 0.35), "width": 1, "dash": "dot"},
-            fill="toself", fillcolor=_css(rgb, 0.03 if ignored else 0.12),
-            hoveron="fills", hoverinfo="text", text=_hover_text(row, bom_quantity),
-            name=f"{name}（{name_counts[name]}）", legendgroup=name,
-            showlegend=name not in seen_names,
+            line={"color": _css(rgb, 0.55), "width": 1, "dash": "dot"},
+            fill="toself", fillcolor=_css(rgb, 0.02 if ignored else 0.10),
+            hoveron="fills", hoverinfo="text", text=_hover_text(row, bom_quantity, segment),
+            name=legend_name,
+            legendgroup=segment.code if segment is not None else legend_name,
+            showlegend=legend_name not in seen_names,
         ))
-        seen_names.add(name)
+        seen_names.add(legend_name)
 
     figure.update_layout(
         width=plot_width, height=plot_height, margin=PLOT_MARGIN,
         plot_bgcolor="white", paper_bgcolor="white", dragmode="pan",
         hoverlabel={"align": "left", "bgcolor": "white", "font": {"size": 13}},
         legend={
-            "title": {"text": "品名（圖元組數）"}, "groupclick": "togglegroup",
+            "title": {"text": "連通塊"}, "groupclick": "togglegroup",
             "orientation": "h", "x": 0, "xanchor": "left", "y": 1, "yanchor": "bottom",
         },
         xaxis={"visible": False, "range": [float(low[0]), float(high[0])]},

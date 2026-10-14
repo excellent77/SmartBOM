@@ -17,6 +17,8 @@
 | `optimizer.py` | Tube 配對及尺寸 ILP | `TubeAssignmentOptimizer` |
 | `rules.py` | Gauge、Hose、Reducer、材質等領域規則 | `BomRuleEngine` |
 | `reporting.py` | BOM 聚合與稽核明細 | `BomReportBuilder` |
+| `review.py` | Reducer 分段、風險排序、人工修正與 BOM 重建 | `ConnectivityReviewService` |
+| `visualization.py` | 原圖、連通塊覆蓋色與 hover 資訊 | `build_debug_figure` |
 | `service.py` | 串聯完整使用案例 | `BomApplicationService` |
 
 ## SOLID 對應
@@ -64,3 +66,17 @@ result = service.run("drawing.dxf")
 3. 新工程元件規則放在 `rules.py`，不要混入幾何距離程式。
 4. 更換求解器只修改或替換 `TubeAssignmentOptimizer`。
 5. 新輸出格式實作 `ReportWriter`，不要改核心分析流程。
+6. 人工覆核規則只放在 `review.py`；Gradio 不直接修改 `EntityGroup`。
+7. 視覺樣式與 Plotly trace 只放在 `visualization.py`，不得反向影響分析結果。
+
+## 人工覆核工作流
+
+`connectivity_bom_main.py` 採用兩階段流程：
+
+1. 上傳檔案後執行自動分析，但不立即發布 BOM。
+2. 以 Reducer／Reducer-Union 為邊界建立連通塊。
+3. 依文字證據差異數排序，並標示小型連通塊。
+4. 使用者只修改連通塊的尺寸與規格。
+5. `ConnectivityReviewService` 將修正值回寫至受連通塊控制的元件。
+6. 固定 Gauge、Gauge Gasket、R.Tee 與 Hose 規則保持不變。
+7. 重新計算 Reducer 尺寸、排除 `顏色_XXX` 元件後才建立最終 BOM。

@@ -39,3 +39,6 @@ class BomAnalysisResult:
     bom: object
     details: object
     adjacency: object
+    groups: list[EntityGroup] = field(default_factory=list)
+    adjacency_map: dict[int, set[int]] = field(default_factory=dict)
+    texts: list[dict] = field(default_factory=list)

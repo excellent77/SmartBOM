@@ -1,6 +1,7 @@
 """將領域模型投影為 BOM 與稽核明細。"""
 
 import math
+import re
 from typing import Sequence
 import pandas as pd
 from .models import EntityGroup
@@ -29,7 +30,7 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
 
     aggregated: dict[tuple[str, str, str], float] = {}
     for group in groups:
-        if group.name == "IGNORE":
+        if group.name == "IGNORE" or re.fullmatch(r"顏色_\d+", str(group.name).strip()):
             continue
         key = (group.name, group.size, group.material)
         if group.name in {"Tube", "Coil Tube", "Hose", "軟管"}:
