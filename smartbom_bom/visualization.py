@@ -27,6 +27,31 @@ TEXT_HEIGHT_SCALE = 0.65
 TEXT_FONT_RANGE = (7.0, 18.0)
 MAX_FRAME_HEIGHT = 860
 LENGTH_NAMES = {"Tube", "Coil Tube", "Hose", "軟管"}
+# 配對文字與判定欄位有差異的元件，以醒目紅框高亮。
+MISMATCH_RGB = (220, 38, 38)
+# 圖內「顯示差異」開關依 trace.meta 切換：開啟時顯示 MISMATCH_META，
+# 關閉時改顯示 MISMATCH_OFF_META（無警示的一般標籤）。
+MISMATCH_META = "mismatch"
+MISMATCH_OFF_META = "mismatch-off"
+# 固定在 iframe 左上角的開關，捲動畫布時仍可操作；切換不重繪圖面，保留縮放位置。
+MISMATCH_TOGGLE_SCRIPT = """
+var gd = document.getElementById('{plot_id}');
+var box = document.createElement('label');
+box.style.cssText = 'position:fixed;top:8px;left:8px;z-index:1000;background:#fff;'
+  + 'border:1px solid #DC2626;border-radius:6px;padding:4px 10px;cursor:pointer;'
+  + 'font:13px sans-serif;color:#DC2626;box-shadow:0 1px 4px rgba(0,0,0,.15);';
+box.innerHTML = '<input type="checkbox" checked style="vertical-align:middle"> 顯示差異';
+document.body.appendChild(box);
+box.querySelector('input').addEventListener('change', function (event) {
+  var on = event.target.checked, shown = [], hidden = [];
+  gd.data.forEach(function (trace, index) {
+    if (trace.meta === '%s') shown.push(index);
+    else if (trace.meta === '%s') hidden.push(index);
+  });
+  if (shown.length) Plotly.restyle(gd, {visible: on}, shown);
+  if (hidden.length) Plotly.restyle(gd, {visible: !on}, hidden);
+});
+""" % (MISMATCH_META, MISMATCH_OFF_META)
 
 
 def _color_rgb(color: str) -> tuple[int, int, int]:
@@ -83,11 +108,14 @@ def _hover_text(
     row: pd.Series,
     bom_quantity: dict[tuple[str, str, str], object],
     segment=None,
+    issues: Sequence[str] = (),
 ) -> str:
-    """顯示元件完整分析資訊，並標示所屬連通塊。"""
+    """顯示元件完整分析資訊，並標示所屬連通塊與差異。"""
     name, size, material = str(row["品名"]), str(row["尺寸"]), str(row["材質"])
     quantity = float(row["原始數量"])
     lines = [f"<b>G{row['群組編號']}：{name}</b>"]
+    for issue in issues:
+        lines.append(f"<span style='color:{_css(MISMATCH_RGB)}'><b>⚠ {html.escape(issue)}</b></span>")
     if segment is not None:
         lines.append(f"所屬連通塊：{segment.code}")
     else:
@@ -217,6 +245,7 @@ def build_debug_figure(
         return layer, -area
 
     label_candidates: dict[int, list[np.ndarray]] = {}
+    mismatch_polygons: list[np.ndarray] = []
     for _, polygon, row in sorted(regions, key=draw_order):
         name = str(row["品名"])
         ignored = name == "IGNORE"
@@ -228,18 +257,40 @@ def build_debug_figure(
             rgb = tuple(int(segment.color[index:index + 2], 16) for index in (1, 3, 5))
         else:
             rgb = (120, 120, 120) if ignored else _color_rgb(row["顏色"])
+        issues = segment.mismatches.get(int(row["群組編號"]), []) if segment is not None else []
+        if issues:
+            mismatch_polygons.append(polygon)
         figure.add_trace(go.Scatter(
             x=polygon[:, 0], y=polygon[:, 1], mode="lines",
             line={"color": _css(rgb, 0.55), "width": 1, "dash": "dot"},
             fill="toself", fillcolor=_css(rgb, 0.02 if ignored else 0.10),
-            hoveron="fills", hoverinfo="text", text=_hover_text(row, bom_quantity, segment),
+            hoveron="fills", hoverinfo="text",
+            text=_hover_text(row, bom_quantity, segment, issues),
             showlegend=False,
         ))
 
+    # 差異高亮獨立成一條 trace（以 meta 標記），讓圖內開關可只切換它；
+    # hoverinfo="skip" 使其不攔截下方元件的 Hover。
+    if mismatch_polygons:
+        xs: list[float | None] = []
+        ys: list[float | None] = []
+        for polygon in mismatch_polygons:
+            xs.extend(polygon[:, 0].tolist() + [None])
+            ys.extend(polygon[:, 1].tolist() + [None])
+        figure.add_trace(go.Scatter(
+            x=xs, y=ys, mode="lines", meta=MISMATCH_META,
+            line={"color": _css(MISMATCH_RGB), "width": 3},
+            fill="toself", fillcolor=_css(MISMATCH_RGB, 0.18),
+            hoverinfo="skip", showlegend=False,
+        ))
+
     # 標籤放在最接近該連通塊幾何中心的實際元件上，避免漂浮在空白處。
-    label_x: list[float] = []
-    label_y: list[float] = []
-    label_text: list[str] = []
+    # 有差異的連通塊同時準備黑色與紅色「⚠N」兩種標籤，由圖內開關切換。
+    labels: dict[str | None, tuple[list[float], list[float], list[str], str]] = {
+        None: ([], [], [], "#000000"),
+        MISMATCH_OFF_META: ([], [], [], "#000000"),
+        MISMATCH_META: ([], [], [], _css(MISMATCH_RGB)),
+    }
     for segment in segments or []:
         candidates = label_candidates.get(segment.segment_id, [])
         if not candidates:
@@ -247,14 +298,24 @@ def build_debug_figure(
         points = np.vstack(candidates)
         center = points.mean(axis=0)
         position = min(points, key=lambda point: float(np.linalg.norm(point - center)))
-        label_x.append(float(position[0]))
-        label_y.append(float(position[1]))
-        label_text.append(f"<b>{segment.code}</b>")
-    if label_text:
+        variants = (
+            [(MISMATCH_OFF_META, segment.code),
+             (MISMATCH_META, f"{segment.code} ⚠{segment.mismatch_count}")]
+            if segment.mismatch_count else [(None, segment.code)]
+        )
+        for meta, text in variants:
+            label_x, label_y, label_text, _ = labels[meta]
+            label_x.append(float(position[0]))
+            label_y.append(float(position[1]))
+            label_text.append(f"<b>{text}</b>")
+    for meta, (label_x, label_y, label_text, color) in labels.items():
+        if not label_text:
+            continue
         figure.add_trace(go.Scatter(
-            x=label_x, y=label_y, text=label_text,
+            x=label_x, y=label_y, text=label_text, meta=meta,
+            visible=meta != MISMATCH_OFF_META,
             mode="text", textposition="top center",
-            textfont={"size": 14, "color": "#000000"},
+            textfont={"size": 14, "color": color},
             hoverinfo="skip", showlegend=False, cliponaxis=False,
         ))
 
@@ -271,9 +332,11 @@ def build_debug_figure(
 
 def figure_to_html(figure: go.Figure) -> str:
     """把檢視圖包成自帶 plotly.js 的 iframe，可離線使用並支援滾輪縮放。"""
+    has_mismatch = any(trace.meta == MISMATCH_META for trace in figure.data)
     document = figure.to_html(
         full_html=True, include_plotlyjs=True,
         config={"scrollZoom": True, "displaylogo": False, "responsive": False},
+        post_script=MISMATCH_TOGGLE_SCRIPT if has_mismatch else None,
     )
     frame_height = min(int(figure.layout.height or MIN_PLOT_HEIGHT) + 30, MAX_FRAME_HEIGHT)
     return (

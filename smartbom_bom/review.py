@@ -49,6 +49,8 @@ class ReviewSegment:
     component_summary: str
     color: str
     order: int = 0
+    # 群組編號 → 差異說明；供互動圖高亮及 Hover 顯示。
+    mismatches: dict[int, list[str]] = field(default_factory=dict)
 
     @property
     def code(self) -> str:
@@ -126,25 +128,33 @@ def _segment_defaults(groups: list[EntityGroup]) -> tuple[str, str]:
     return _majority(size_values), _majority(material_values)
 
 
-def _segment_mismatches(groups: list[EntityGroup]) -> int:
-    """計算每個元件的配對文字與其最終欄位差異數。
+def _group_mismatches(group: EntityGroup) -> list[str]:
+    """比較元件配對文字與其最終欄位，回傳每項差異的說明。
 
     實際比較採用元件最終欄位，避免 Gauge、Hose、Xx1/4 等合法特殊規則被誤報。
     """
-    mismatch = 0
-    for group in groups:
-        if not group.matched_text:
-            continue
-        evidence_size, evidence_material = _text_evidence(group.matched_text)
-        target_size = _normalize_size(group.size) if group.size else ""
-        if is_special_rtee(group) and "x" in target_size.casefold():
-            target_size = re.split(r"[xX×]", target_size, maxsplit=1)[0]
-        target_material = re.sub(r"\s+", " ", group.material.strip()).upper()
-        if evidence_size and target_size and _normalize_size(evidence_size) != target_size:
-            mismatch += 1
-        if evidence_material and target_material and evidence_material.upper() != target_material:
-            mismatch += 1
-    return mismatch
+    if not group.matched_text:
+        return []
+    evidence_size, evidence_material = _text_evidence(group.matched_text)
+    target_size = _normalize_size(group.size) if group.size else ""
+    if is_special_rtee(group) and "x" in target_size.casefold():
+        target_size = re.split(r"[xX×]", target_size, maxsplit=1)[0]
+    target_material = re.sub(r"\s+", " ", group.material.strip()).upper()
+    issues = []
+    if evidence_size and target_size and _normalize_size(evidence_size) != target_size:
+        issues.append(f"尺寸：文字 {_normalize_size(evidence_size)} ≠ 判定 {target_size}")
+    if evidence_material and target_material and evidence_material.upper() != target_material:
+        issues.append(f"材質：文字 {evidence_material.upper()} ≠ 判定 {target_material}")
+    return issues
+
+
+def _segment_mismatches(groups: list[EntityGroup]) -> dict[int, list[str]]:
+    """回傳連通塊內有差異的元件及其差異說明。"""
+    return {
+        group.group_id: issues
+        for group in groups
+        if (issues := _group_mismatches(group))
+    }
 
 
 def _dimension_key(value: str) -> tuple[int, float, str]:
@@ -203,15 +213,17 @@ class ConnectivityReviewService:
             summary = "、".join(
                 f"{name}×{count}" for name, count in sorted(counts.items(), key=lambda item: item[0])
             )
+            mismatches = _segment_mismatches(visible)
             segments.append(ReviewSegment(
                 segment_id=segment_id,
                 group_ids=group_ids,
                 size=size,
                 specification=specification,
                 component_count=len(visible),
-                mismatch_count=_segment_mismatches(visible),
+                mismatch_count=sum(len(issues) for issues in mismatches.values()),
                 component_summary=summary,
                 color=SEGMENT_PALETTE[segment_id % len(SEGMENT_PALETTE)],
+                mismatches=mismatches,
             ))
         segments.sort(key=lambda segment: (-segment.mismatch_count, segment.component_count, segment.segment_id))
         for order, segment in enumerate(segments, 1):
