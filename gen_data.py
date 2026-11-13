@@ -1,104 +1,97 @@
-import os
-import random
-from PIL import Image, ImageDraw, ImageFont
+"""使用 symbols/ 圖示產生可選的 YOLO 合成訓練資料。"""
+
+from pathlib import Path
 import math
+import random
 
-# --- 設定區 ---
-SYMBOL_DIR = "symbols"        
-OUTPUT_DIR = "synth_dataset"  
-NUM_IMAGES = 1000              
-IMG_SIZE = (800, 800)         
+from PIL import Image, ImageDraw, ImageFont
 
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+SYMBOL_DIRECTORY = Path("symbols")
+OUTPUT_DIRECTORY = Path("synth_dataset")
+IMAGE_COUNT = 1000
+IMAGE_SIZE = (800, 800)
 
 
-symbol_files = sorted([f for f in os.listdir(SYMBOL_DIR) if f.endswith('.png')])
-class_map = {name: i for i, name in enumerate(symbol_files)}
-
-# ==========================================
-# 輔助函數：畫隨機干擾背景 (Noise)
-# ==========================================
-def draw_background_noise(draw, width, height):
+def _draw_background_noise(draw: ImageDraw.ImageDraw, width: int, height: int) -> None:
+    """加入管線、格線與文字，模擬工程圖背景。"""
     for _ in range(random.randint(15, 30)):
-        x1, y1 = random.randint(0, width), random.randint(0, height)
+        start_x, start_y = random.randint(0, width), random.randint(0, height)
         length = random.randint(50, 300)
-        angle_deg = random.choice([0, 30, 90, 150, 210, 270, 330])
-        angle_rad = math.radians(angle_deg)
-        x2 = int(x1 + length * math.cos(angle_rad))
-        y2 = int(y1 + length * math.sin(angle_rad))
-        
-        color = random.choice([(255, 165, 0), (150, 150, 150), (100, 200, 255)])
-        thickness = random.randint(1, 3)
-        draw.line([(x1, y1), (x2, y2)], fill=color, width=thickness)
+        angle = math.radians(random.choice([0, 30, 90, 150, 210, 270, 330]))
+        end = (int(start_x + length * math.cos(angle)), int(start_y + length * math.sin(angle)))
+        draw.line(
+            [(start_x, start_y), end],
+            fill=random.choice([(255, 165, 0), (150, 150, 150), (100, 200, 255)]),
+            width=random.randint(1, 3),
+        )
 
-
-    if random.random() > 0.5: 
-        grid_start_y = random.randint(100, height - 200)
-        grid_start_x = random.randint(100, width - 200)
-        for i in range(random.randint(3, 8)):
-            draw.line([(grid_start_x, grid_start_y + i*20), (grid_start_x + 200, grid_start_y + i*20)], fill=(200, 200, 200), width=1)
-            draw.line([(grid_start_x + i*40, grid_start_y), (grid_start_x + i*40, grid_start_y + 150)], fill=(200, 200, 200), width=1)
+    if width >= 300 and height >= 300 and random.random() > 0.5:
+        grid_x = random.randint(100, width - 200)
+        grid_y = random.randint(100, height - 200)
+        for index in range(random.randint(3, 8)):
+            draw.line([(grid_x, grid_y + index * 20), (grid_x + 200, grid_y + index * 20)], fill=(200, 200, 200))
+            draw.line([(grid_x + index * 40, grid_y), (grid_x + index * 40, grid_y + 150)], fill=(200, 200, 200))
 
     font = ImageFont.load_default()
+    labels = ["FL+4350", "D.V", "C.V", '1/2" PN2 Tube', "3185mm", "QTY: 5"]
     for _ in range(random.randint(10, 20)):
-        x, y = random.randint(0, width), random.randint(0, height)
-        text = random.choice(["FL+4350", "D.V", "C.V", "1/2\" PN2 Tube", "3185mm", "QTY: 5"])
-        draw.text((x, y), text, fill=random.choice([(0,0,0), (50,50,50)]), font=font)
+        draw.text(
+            (random.randint(0, width), random.randint(0, height)),
+            random.choice(labels),
+            fill=random.choice([(0, 0, 0), (50, 50, 50)]),
+            font=font,
+        )
 
 
-# ==========================================
-# 主生成迴圈
-# ==========================================
-for img_idx in range(NUM_IMAGES):
-    canvas = Image.new("RGB", IMG_SIZE, (255, 255, 255))
-    draw = ImageDraw.Draw(canvas)
-    
+def generate_dataset(
+    symbol_directory: Path = SYMBOL_DIRECTORY,
+    output_directory: Path = OUTPUT_DIRECTORY,
+    image_count: int = IMAGE_COUNT,
+    image_size: tuple[int, int] = IMAGE_SIZE,
+) -> None:
+    """產生合成圖片及同名 YOLO 標註檔。"""
+    symbols = sorted(symbol_directory.glob("*.png"))
+    if not symbols:
+        raise FileNotFoundError(f"找不到元件圖示：{symbol_directory}")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    class_map = {path.name: index for index, path in enumerate(symbols)}
+    width, height = image_size
 
-    draw_background_noise(draw, IMG_SIZE[0], IMG_SIZE[1])
-    
-    labels = []
-    canvas_rgba = canvas.convert("RGBA")
+    for image_index in range(image_count):
+        canvas = Image.new("RGB", image_size, "white")
+        _draw_background_noise(ImageDraw.Draw(canvas), width, height)
+        canvas = canvas.convert("RGBA")
+        annotations = []
 
-    for _ in range(random.randint(10, 25)):
-        s_name = random.choice(symbol_files)
-        s_img = Image.open(os.path.join(SYMBOL_DIR, s_name)).convert("RGBA")
-        
-        angle = random.choice([0, 30, 90, 150, 180, 210, 270, 330])
-        s_img = s_img.rotate(angle, expand=True) 
-        
-        scale = random.uniform(0.4, 0.9) 
-        new_size = (int(s_img.width * scale), int(s_img.height * scale))
-        
-        if new_size[0] == 0 or new_size[1] == 0: continue
-            
-        s_img = s_img.resize(new_size, Image.Resampling.LANCZOS)
+        for _ in range(random.randint(10, 25)):
+            symbol_path = random.choice(symbols)
+            with Image.open(symbol_path) as source:
+                symbol = source.convert("RGBA")
+            symbol = symbol.rotate(random.choice([0, 30, 90, 150, 180, 210, 270, 330]), expand=True)
+            scale = random.uniform(0.4, 0.9)
+            symbol = symbol.resize(
+                (max(1, int(symbol.width * scale)), max(1, int(symbol.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            x = random.randint(0, width - symbol.width)
+            y = random.randint(0, height - symbol.height)
+            canvas.paste(symbol, (x, y), symbol)
+            annotations.append(
+                f"{class_map[symbol_path.name]} "
+                f"{(x + symbol.width / 2) / width:.6f} {(y + symbol.height / 2) / height:.6f} "
+                f"{symbol.width / width:.6f} {symbol.height / height:.6f}"
+            )
 
-        x = random.randint(0, IMG_SIZE[0] - s_img.width)
-        y = random.randint(0, IMG_SIZE[1] - s_img.height)
+        stem = f"synth_{image_index:04d}"
+        canvas.convert("RGB").convert("L").convert("RGB").save(output_directory / f"{stem}.jpg")
+        (output_directory / f"{stem}.txt").write_text("\n".join(annotations), encoding="utf-8")
 
-        canvas_rgba.paste(s_img, (x, y), s_img)
 
-        x_center = (x + s_img.width / 2) / IMG_SIZE[0]
-        y_center = (y + s_img.height / 2) / IMG_SIZE[1]
-        w_norm = s_img.width / IMG_SIZE[0]
-        h_norm = s_img.height / IMG_SIZE[1]
-        
-        x_center = max(0.0, min(1.0, x_center))
-        y_center = max(0.0, min(1.0, y_center))
-        w_norm = max(0.0, min(1.0, w_norm))
-        h_norm = max(0.0, min(1.0, h_norm))
+def main() -> None:
+    generate_dataset()
+    print(f"完成：{OUTPUT_DIRECTORY}")
 
-        labels.append(f"{class_map[s_name]} {x_center:.6f} {y_center:.6f} {w_norm:.6f} {h_norm:.6f}")
 
-    final_image = canvas_rgba.convert("RGB")
-
-    final_image = final_image.convert("L").convert("RGB")
-
-    # 儲存結果
-    base_name = f"synth_{img_idx:04d}"
-    final_image.save(os.path.join(OUTPUT_DIR, f"{base_name}.jpg"))
-    with open(os.path.join(OUTPUT_DIR, f"{base_name}.txt"), "w") as f:
-        f.write("\n".join(labels))
-
-print(f"完成！請到 {OUTPUT_DIR} 資料夾查看資料。")
+if __name__ == "__main__":
+    main()

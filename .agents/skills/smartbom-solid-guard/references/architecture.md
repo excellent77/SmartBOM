@@ -21,7 +21,7 @@ Use this reference before changing production Python code.
 | File input/output | `io.py`, `dxf_reader.py` | BOM policy |
 | Visualization | `visualization.py` | mutation of analysis results |
 
-`Test.py` and `systemv1/` are legacy/experimental unless the request explicitly targets them. Do not copy new production behavior into them automatically.
+`gen_data.py` is an optional synthetic-image utility and is not part of the BOM runtime path.
 
 ## Dependency direction
 

@@ -73,14 +73,3 @@ class BomApplicationService:
         if write_reports:
             self.writer.write(source, result)
         return result
-
-def build_network_bom(df: pd.DataFrame, component_tolerance=None, connection_tolerance=None, duplicate_tolerance=None):
-    """保留舊 API；新程式建議直接使用 BomApplicationService。"""
-    defaults = BomSettings()
-    settings = BomSettings(
-        component_tolerance=defaults.component_tolerance if component_tolerance is None else component_tolerance,
-        connection_tolerance=defaults.connection_tolerance if connection_tolerance is None else connection_tolerance,
-        duplicate_tolerance=defaults.duplicate_tolerance if duplicate_tolerance is None else duplicate_tolerance,
-    )
-    result = BomApplicationService.create_default(settings).analyze(df)
-    return result.bom, result.details, result.adjacency

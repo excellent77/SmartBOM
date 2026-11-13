@@ -59,7 +59,9 @@ def fill_by_integer_programming(
         uniform_size = node_uniform_size.get(group.group_id, "")
         if is_tube(group):
             description = tube_descriptions.get(group.group_id)
-            if description:
+            # 只有通用 Tube 可由規格文字細分成 Coil Tube；使用者依顏色
+            # 指定的 Coil Tube／雙套管名稱是元件身分，不應被文字覆蓋。
+            if description and canonical_name(group.name) == "tube":
                 group.name = description["name"]
             group.size = uniform_size
             group.quantity = description["length"] if description else 0.0

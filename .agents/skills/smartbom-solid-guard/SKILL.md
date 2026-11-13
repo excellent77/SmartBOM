@@ -15,7 +15,7 @@ Apply this skill whenever application source code will be changed. It is a desig
 4. After editing, run:
 
    ```bash
-   python skills/smartbom-solid-guard/scripts/check_solid.py
+   python .agents/skills/smartbom-solid-guard/scripts/check_solid.py
    ```
 
    Also run focused behavioral tests and `python -m py_compile` for changed Python files. Fix every `ERROR`. Review every `WARN`; fix new warnings introduced by the change or explain why the tradeoff is appropriate.

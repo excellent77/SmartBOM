@@ -9,13 +9,13 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from fractions import Fraction
-import html
 import re
 from pathlib import Path
 from typing import Sequence
 
 import pandas as pd
 
+from .config import SMALL_SEGMENT_GROUP_THRESHOLD
 from .models import BomAnalysisResult, EntityGroup
 from .grouping import _components_for_nodes
 from .predicates import (
@@ -26,7 +26,6 @@ from .reporting import BomReportBuilder
 from .text import FINISH_MATERIAL_NAMES, _extract_size, _normalize_size, _tube_description
 
 
-SMALL_SEGMENT_GROUP_THRESHOLD = 3
 SEGMENT_PALETTE = (
     "#2563EB", "#7C3AED", "#0891B2", "#059669", "#65A30D", "#CA8A04",
     "#EA580C", "#DC2626", "#DB2777", "#4F46E5", "#0F766E", "#9333EA",
@@ -246,21 +245,6 @@ class ConnectivityReviewService:
             }
             for segment in session.segments
         ])
-
-    def risk_cards(self, session: ReviewSession) -> str:
-        cards = []
-        for segment in session.segments:
-            severity = "#DC2626" if segment.mismatch_count >= 3 else "#F97316" if segment.mismatch_count else segment.color
-            cards.append(
-                f'<div class="segment-card" style="border-left:8px solid {severity};">'
-                f'<div><b>#{segment.order} {segment.code}</b> '
-                f'<span style="color:{segment.color};font-size:20px">●</span></div>'
-                f'<div>{html.escape(segment.risk_label)}</div>'
-                f'<div>尺寸：{html.escape(segment.size or "未判定")}｜'
-                f'規格：{html.escape(segment.specification or "未判定")}｜'
-                f'元件：{segment.component_count}</div></div>'
-            )
-        return '<div class="segment-grid">' + "".join(cards) + "</div>"
 
     def apply(self, session: ReviewSession, edited: pd.DataFrame) -> BomAnalysisResult:
         """套用人工尺寸／規格，保護固定元件規則，重算 Reducer 與最終 BOM。"""

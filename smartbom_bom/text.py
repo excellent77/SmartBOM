@@ -7,7 +7,7 @@ import pandas as pd
 from .config import TEXT_TYPES
 from .models import EntityGroup
 from .predicates import is_size_boundary, is_tube
-from .geometry import _number, _point
+from .geometry import _point
 
 def clean_dxf_text(value: str) -> str:
     text = str(value).replace("\\P", " ").replace("\\~", " ").replace("^I", " ")

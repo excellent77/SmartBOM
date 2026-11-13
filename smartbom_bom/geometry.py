@@ -216,13 +216,3 @@ def remove_duplicate_lines(geometries: Sequence[Geometry], tolerance: float) -> 
             duplicates.append(geometry)
             kept.append(geometry)
     return kept, removed_rows
-
-
-
-class GeometryService:
-    """提供可注入的幾何操作門面，隱藏底層數值函式。"""
-    row_to_geometry = staticmethod(row_to_geometry)
-    distance = staticmethod(geometry_distance)
-    cluster = staticmethod(cluster_geometries)
-    remove_duplicates = staticmethod(remove_duplicate_lines)
-    center = staticmethod(component_center)

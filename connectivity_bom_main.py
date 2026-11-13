@@ -71,17 +71,6 @@ def _as_frame(value: object) -> pd.DataFrame:
     return pd.DataFrame(value, columns=REVIEW_COLUMNS)
 
 
-def _as_component_frame(value: object) -> pd.DataFrame:
-    """統一 Gradio 可能回傳的元件對照表格式。"""
-    if isinstance(value, pd.DataFrame):
-        return value.copy()
-    if isinstance(value, dict):
-        return pd.DataFrame(value)
-    if value is None:
-        return EMPTY_COMPONENT_MAPPING.copy()
-    return pd.DataFrame(value, columns=COMPONENT_MAPPING_COLUMNS)
-
-
 def _color_sort_key(color: str) -> tuple[int, int | str]:
     match = re.fullmatch(r"顏色_(\d+)", str(color).strip())
     return (0, int(match.group(1))) if match else (1, str(color))
@@ -136,7 +125,9 @@ def prepare_uploaded_file(file_path: str | Path | None):
 
 
 def _validated_component_map(value: object, expected_colors: tuple[str, ...]) -> dict[str, dict[str, str]]:
-    frame = _as_component_frame(value).fillna("")
+    if not isinstance(value, pd.DataFrame):
+        raise TypeError("元件對照資料必須是 DataFrame")
+    frame = value.copy().fillna("")
     missing_columns = [column for column in COMPONENT_MAPPING_COLUMNS if column not in frame.columns]
     if missing_columns:
         raise ValueError("元件對照表缺少欄位：" + "、".join(missing_columns))
@@ -206,15 +197,6 @@ def analyze_component_mapping(component_mapping: object, prepared: PreparedUploa
         return (f"❌ **分析失敗**：{type(exc).__name__}: {exc}", *empty)
 
 
-def analyze_uploaded_file(file_path: str | Path | None):
-    """保留程式化相容入口；介面本身仍強制兩階段確認。"""
-    status, mapping, prepared = prepare_uploaded_file(file_path)
-    if prepared is None:
-        empty = (EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_BOM, [], None)
-        return (status, *empty)
-    return analyze_component_mapping(mapping, prepared)
-
-
 def prepare_interface_file(file_path: str | Path | None):
     """上傳新圖面時同時清空上一次分析結果。"""
     status, _mapping, prepared = prepare_uploaded_file(file_path)
@@ -281,12 +263,6 @@ def confirm_review(edited_review: object, session: ReviewSession | None):
             EMPTY_FIGURE, _as_frame(edited_review),
             session.result.details, EMPTY_BOM, [], session,
         )
-
-
-def run_file(file_path: str | Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """保留無 UI 的自動分析入口；不包含人工覆核。"""
-    result = BomApplicationService.create_default().run(file_path, write_reports=True)
-    return result.bom, result.details, result.adjacency
 
 
 def create_interface() -> Any:
@@ -372,8 +348,8 @@ def create_interface() -> Any:
                 gr.Markdown(
                     "原始圖元線色維持 DXF 顏色，連通塊仍依原配色標示；"
                     "圖上黑色 C01、C02 標籤代表 Reducer 分段連通塊。"
-                    "**紅框實線**元件代表配對文字與判定尺寸／材質不一致，"
-                    "紅色「⚠N」標籤為該連通塊差異數，可用圖面左上角「顯示差異」開關切換；"
+                    "**黃框黃底**代表小型連通塊；尺寸／材質差異不再改變框線或底色。"
+                    "紅色「⚠N」標籤仍代表該連通塊差異數，可用圖面左上角「顯示差異」開關切換；"
                     "滑鼠停留時可查看元件完整資訊、所屬連通塊與差異內容。"
                 )
                 debug_plot = gr.HTML(value=EMPTY_FIGURE)

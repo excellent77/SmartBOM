@@ -1,7 +1,6 @@
 # ignore dirs
 __pycache__/
 .vscode/
-.agents/
 .codex/
 data/
 

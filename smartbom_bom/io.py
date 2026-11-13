@@ -49,9 +49,3 @@ class CsvReportWriter:
         result.details.to_csv(paths[1], index=False, encoding="utf-8-sig")
         result.adjacency.to_csv(paths[2], encoding="utf-8-sig")
         return paths
-
-def read_vector_csv(path: str | Path) -> pd.DataFrame:
-    return DefaultVectorDataLoader().load(path)
-
-def load_vector_data(path: str | Path) -> pd.DataFrame:
-    return DefaultVectorDataLoader().load(path)

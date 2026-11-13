@@ -2,14 +2,11 @@ import os
 import subprocess
 import shutil
 import tempfile
-from collections import defaultdict
 
 import ezdxf
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import numpy as np
 import pandas as pd
-from ezdxf import bbox, colors
+from ezdxf import bbox
 from columns import (
     COL_NAME, COL_COLOR, COL_COUNT,
     COL_START_X, COL_START_Y, COL_END_X, COL_END_Y,
@@ -23,35 +20,9 @@ from columns import (
 
 
 
-PNG_WIDTH = 7680
-PNG_HEIGHT = 4320
-PNG_DPI = 480
 VIEWPORT_PADDING_RATIO = 0.02
 QUANTITY_TAGS = {"QTY", "COUNT", "QUANTITY", "NUM", "計數", "數量"}
-DRAWABLE_BOUND_TYPES = {"LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ARC", "ELLIPSE", "HATCH"}
 
-
-
-def extract_dxf_data(dxf_path):
-    """使用 ezdxf 讀取 DXF 資料"""
-    doc = ezdxf.readfile(dxf_path)
-    msp = doc.modelspace()
-    
-    data = []
-    
-    # 萃取圖塊與屬性
-    for block in msp.query('INSERT'):
-        block_info = {
-            "Type": "Block",
-            "Name": block.dxf.name,
-            "X": round(block.dxf.insert.x, 2),
-            "Y": round(block.dxf.insert.y, 2)
-        }
-        for attrib in block.attribs:
-            block_info[attrib.dxf.tag] = attrib.dxf.text
-        data.append(block_info)
-        
-    return pd.DataFrame(data)
 
 
 def _dxf_attr(entity, name, default=None):
@@ -98,47 +69,6 @@ def _normalize_point(point):
         return x, y
     except Exception:
         return None, None
-
-
-def _true_color_to_rgb(true_color):
-    if true_color is None:
-        return None
-    value = int(true_color)
-    return (value >> 16 & 255, value >> 8 & 255, value & 255)
-
-
-def _aci_to_plot_rgb(color):
-    color = abs(int(color))
-    if color == 7:
-        return (0, 0, 0)
-    rgb = colors.aci2rgb(color)
-    return (rgb.r, rgb.g, rgb.b)
-
-
-def _entity_rgb(entity, doc=None):
-    rgb = _true_color_to_rgb(_dxf_attr(entity, "true_color"))
-    if rgb is not None:
-        return rgb
-
-    color = _dxf_attr(entity, "color")
-    if color is not None and color not in (0, 256):
-        return _aci_to_plot_rgb(color)
-
-    layer = _layer(doc, entity)
-    if layer is not None:
-        rgb = _true_color_to_rgb(_dxf_attr(layer, "true_color"))
-        if rgb is not None:
-            return rgb
-
-        layer_color = _dxf_attr(layer, "color")
-        if layer_color is not None and layer_color not in (0, 256):
-            return _aci_to_plot_rgb(layer_color)
-
-    return (0, 0, 0)
-
-
-def _rgb_to_matplotlib(rgb):
-    return tuple(channel / 255 for channel in rgb)
 
 
 def _point_xy(point):
@@ -262,30 +192,6 @@ def _circle_bounds(center, radius):
     return center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius
 
 
-def _draw_hatch(ax, entity, draw_color):
-    paths = _hatch_boundary_paths(entity)
-    if not paths:
-        return False
-
-    solid_fill = bool(getattr(entity.dxf, "solid_fill", 0))
-    for points in paths:
-        if solid_fill and len(points) >= 3:
-            polygon = patches.Polygon(
-                points,
-                closed=True,
-                facecolor=draw_color,
-                edgecolor=draw_color,
-                alpha=0.3,
-                linewidth=1,
-            )
-            ax.add_patch(polygon)
-        else:
-            xs = [point[0] for point in points]
-            ys = [point[1] for point in points]
-            ax.plot(xs, ys, color=draw_color, linewidth=1)
-    return True
-
-
 def _entity_bounds(entity, entity_type):
     if entity_type == "LINE":
         start = _normalize_point(entity.dxf.start)
@@ -393,17 +299,6 @@ def _iter_modelspace_entities(doc, use_layout_viewport=True):
         entity_type = entity.dxftype()
         if clip_bounds is None or _bounds_intersect(_entity_bounds(entity, entity_type), clip_bounds):
             yield entity, entity_type
-
-
-def _extend_entity_bounds(entity, entity_type, all_x, all_y):
-    if entity_type not in DRAWABLE_BOUND_TYPES:
-        return
-    bounds = _entity_bounds(entity, entity_type)
-    if bounds is None:
-        return
-    min_x, min_y, max_x, max_y = bounds
-    all_x.extend([min_x, max_x])
-    all_y.extend([min_y, max_y])
 
 
 def _extract_count_from_attribs(attribs):
@@ -633,71 +528,6 @@ def _rows_for_entity(entity, entity_type, color):
     return rows
 
 
-def _draw_entity(ax, entity, entity_type, draw_color):
-    if entity_type == "LINE":
-        start = _normalize_point(entity.dxf.start)
-        end = _normalize_point(entity.dxf.end)
-        if None not in start and None not in end:
-            ax.plot([start[0], end[0]], [start[1], end[1]], color=draw_color, linewidth=1)
-
-    elif entity_type in {"LWPOLYLINE", "POLYLINE"}:
-        for start, end in _explode_polyline(entity):
-            ax.plot([start[0], end[0]], [start[1], end[1]], color=draw_color, linewidth=1)
-
-    elif entity_type == "CIRCLE":
-        center = _normalize_point(entity.dxf.center)
-        if None not in center:
-            circle = patches.Circle(center, float(entity.dxf.radius), fill=False, edgecolor=draw_color, linewidth=1)
-            ax.add_patch(circle)
-
-    elif entity_type == "ARC":
-        center = _normalize_point(entity.dxf.center)
-        if None not in center:
-            radius = float(entity.dxf.radius)
-            start_angle = float(getattr(entity.dxf, "start_angle", 0))
-            end_angle = float(getattr(entity.dxf, "end_angle", 360))
-            arc = patches.Arc(
-                center,
-                2 * radius,
-                2 * radius,
-                angle=0,
-                theta1=start_angle,
-                theta2=end_angle,
-                color=draw_color,
-                linewidth=1,
-            )
-            ax.add_patch(arc)
-
-    elif entity_type == "ELLIPSE":
-        center = _normalize_point(entity.dxf.center)
-        if None not in center:
-            ellipse = patches.Ellipse(
-                center,
-                2 * entity.dxf.major_axis.magnitude,
-                2 * entity.dxf.minor_axis.magnitude,
-                angle=np.degrees(entity.dxf.rotation),
-                fill=False,
-                edgecolor=draw_color,
-                linewidth=1,
-            )
-            ax.add_patch(ellipse)
-
-    elif entity_type == "HATCH":
-        _draw_hatch(ax, entity, draw_color)
-
-
-def _axis_limits_from_bounds(xs, ys):
-    if not xs or not ys:
-        return None
-    margin = 0.1 * (max(xs) - min(xs) + max(ys) - min(ys)) / 2
-    return (
-        min(xs) - margin,
-        max(xs) + margin,
-        min(ys) - margin,
-        max(ys) + margin,
-    )
-
-
 def read_dwg(file_path: str, use_layout_viewport: bool = True) -> pd.DataFrame:
     """Read a DWG or DXF path. If DWG, attempt to convert to DXF using ODAFileConverter.
 
@@ -712,93 +542,3 @@ def read_dwg(file_path: str, use_layout_viewport: bool = True) -> pd.DataFrame:
         rows.extend(_rows_for_entity(entity, entity_type, color))
 
     return pd.DataFrame(rows)
-
-
-def export_dxf_by_color_to_png(dxf_path: str, output_dir: str = None, use_layout_viewport: bool = True):
-    """
-    讀入DXF檔案，根據modelspace中entity的顏色資訊分組，
-    每個顏色生成一個PNG檔案。
-    
-    Args:
-        dxf_path: DXF或DWG檔案路徑
-        output_dir: 輸出目錄，若為None則在同目錄下建立 colors_png 資料夾
-    
-    Returns:
-        dict: {顏色名稱: PNG檔案路徑}
-    """
-    file_path = os.path.abspath(dxf_path)
-    doc = path_to_dxf(dxf_path)
-    
-    # 根據顏色分組entity
-    entities_by_color = defaultdict(list)
-    global_x, global_y = [], []
-    
-    for entity, entity_type in _iter_modelspace_entities(doc, use_layout_viewport):
-        color = _entity_color(entity, doc)
-        entities_by_color[color].append((entity, entity_type))
-        try:
-            _extend_entity_bounds(entity, entity_type, global_x, global_y)
-        except Exception:
-            pass
-
-    global_axis_limits = _axis_limits_from_bounds(global_x, global_y)
-    
-    # 建立輸出目錄
-    if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(file_path), "colors_png")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    output_files = {}
-    figure_size = (PNG_WIDTH / PNG_DPI, PNG_HEIGHT / PNG_DPI)
-    
-    # 為每個顏色生成PNG
-    for color, entities in entities_by_color.items():
-        fig, ax = plt.subplots(figsize=figure_size, dpi=PNG_DPI)
-        
-        for entity, entity_type in entities:
-            try:
-                draw_color = _rgb_to_matplotlib(_entity_rgb(entity, doc))
-                _draw_entity(ax, entity, entity_type, draw_color)
-            
-            except Exception as e:
-                print(f"警告: 無法繪製 {entity_type} entity: {e}")
-                continue
-        
-        # 所有顏色圖使用同一組座標軸範圍，避免每張PNG自動縮放。
-        if global_axis_limits:
-            min_x, max_x, min_y, max_y = global_axis_limits
-            ax.set_xlim(min_x, max_x)
-            ax.set_ylim(min_y, max_y)
-            ax.set_autoscale_on(False)
-        
-        ax.set_aspect('equal')
-        ax.set_title(f"DXF - {color[3:]}")
-        ax.grid(True, alpha=0.3)
-        
-        # 保存PNG
-        file_name = f"{color}.png"
-        output_path = os.path.join(output_dir, file_name)
-        fig.subplots_adjust(left=0.04, right=0.99, top=0.96, bottom=0.04)
-        fig.savefig(output_path, dpi=PNG_DPI)
-        plt.close(fig)
-        
-        output_files[color] = output_path
-        print(f"已生成: {output_path}")
-    
-    return output_files
-
-
-
-if __name__ == "__main__":
-    #path = "/home/f11167/SmartBOM/data/16_單線圖_KOXDLP2000.dxf"
-    import os
-    for file in os.listdir("/home/f11167/SmartBOM/data_new"):
-        try:
-            code = int(file.split("_")[0])
-        except Exception:
-            code = 10000
-        if file.lower().endswith((".dwg")):
-            path = os.path.join("/home/f11167/SmartBOM/data_new", file)
-            export_dxf_by_color_to_png(path, os.path.join("/home/f11167/SmartBOM/", file))
-            df = read_dwg(path)
-            df.to_csv("/home/f11167/SmartBOM/test.csv", index=False, encoding='utf-8-sig')

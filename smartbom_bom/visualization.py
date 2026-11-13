@@ -27,8 +27,9 @@ TEXT_HEIGHT_SCALE = 0.65
 TEXT_FONT_RANGE = (7.0, 18.0)
 MAX_FRAME_HEIGHT = 860
 LENGTH_NAMES = {"Tube", "Coil Tube", "Hose", "軟管"}
-# 配對文字與判定欄位有差異的元件，以醒目紅框高亮。
+# 差異提示維持紅色；小型連通塊改用較柔和的黃色，區分兩種提示語意。
 MISMATCH_RGB = (220, 38, 38)
+SMALL_SEGMENT_RGB = (234, 179, 8)
 # 圖內「顯示差異」開關依 trace.meta 切換：開啟時顯示 MISMATCH_META，
 # 關閉時改顯示 MISMATCH_OFF_META（無警示的一般標籤）。
 MISMATCH_META = "mismatch"
@@ -125,7 +126,7 @@ def _hover_text(
     else:
         lines.append(f"尺寸：{size or '（未判定）'}")
         lines.append(f"材質：{material or '（未判定）'}")
-        if name in LENGTH_NAMES:
+        if row.get("元件類型", "") == COMPONENT_TYPE_TUBE or name in LENGTH_NAMES:
             lines.append(f"本段長度：{_format_number(quantity)}M")
         total = bom_quantity.get((name, size, material))
         lines.append(f"BOM 合計：{total}" if total is not None else "BOM 合計：未列入")
@@ -251,7 +252,7 @@ def build_debug_figure(
         return layer, -area
 
     label_candidates: dict[int, list[np.ndarray]] = {}
-    mismatch_polygons: list[np.ndarray] = []
+    small_segment_polygons: list[np.ndarray] = []
     for _, polygon, row in sorted(regions, key=draw_order):
         name = str(row["品名"])
         ignored = name == "IGNORE"
@@ -264,8 +265,8 @@ def build_debug_figure(
         else:
             rgb = (120, 120, 120) if ignored else _color_rgb(row["顏色"])
         issues = segment.mismatches.get(int(row["群組編號"]), []) if segment is not None else []
-        if issues:
-            mismatch_polygons.append(polygon)
+        if segment is not None and segment.is_small:
+            small_segment_polygons.append(polygon)
         figure.add_trace(go.Scatter(
             x=polygon[:, 0], y=polygon[:, 1], mode="lines",
             line={"color": _css(rgb, 0.55), "width": 1, "dash": "dot"},
@@ -275,18 +276,18 @@ def build_debug_figure(
             showlegend=False,
         ))
 
-    # 差異高亮獨立成一條 trace（以 meta 標記），讓圖內開關可只切換它；
-    # hoverinfo="skip" 使其不攔截下方元件的 Hover。
-    if mismatch_polygons:
+    # 小型連通塊固定以黃框黃底提示；它與尺寸／材質差異無關，且不受
+    # 「顯示差異」開關影響。hoverinfo="skip" 避免攔截元件 Hover。
+    if small_segment_polygons:
         xs: list[float | None] = []
         ys: list[float | None] = []
-        for polygon in mismatch_polygons:
+        for polygon in small_segment_polygons:
             xs.extend(polygon[:, 0].tolist() + [None])
             ys.extend(polygon[:, 1].tolist() + [None])
         figure.add_trace(go.Scatter(
-            x=xs, y=ys, mode="lines", meta=MISMATCH_META,
-            line={"color": _css(MISMATCH_RGB), "width": 3},
-            fill="toself", fillcolor=_css(MISMATCH_RGB, 0.18),
+            x=xs, y=ys, mode="lines",
+            line={"color": _css(SMALL_SEGMENT_RGB), "width": 3},
+            fill="toself", fillcolor=_css(SMALL_SEGMENT_RGB, 0.18),
             hoverinfo="skip", showlegend=False,
         ))
 

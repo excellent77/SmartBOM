@@ -4,7 +4,7 @@
 
 For every task that creates, edits, refactors, fixes, or reviews Python application code in this repository, the main agent must use the project skill at:
 
-`skills/smartbom-solid-guard/SKILL.md`
+`.agents/skills/smartbom-solid-guard/SKILL.md`
 
 Read that file completely before making source-code changes and follow its pre-change, during-change, and post-change workflow. This requirement also applies to small fixes. It does not apply to data-only CSV comparisons or documentation-only edits.
 

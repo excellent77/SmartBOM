@@ -15,12 +15,11 @@ import subprocess
 from typing import Iterable
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 PRODUCTION_PREFIXES = (
     "smartbom_bom/",
     "connectivity_bom_main.py",
     "connectivity_bom_batch.py",
-    "reanalyze_batch_bom.py",
     "dxf_reader.py",
 )
 DOMAIN_MODULES = {

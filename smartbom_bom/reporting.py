@@ -5,6 +5,7 @@ import re
 from typing import Sequence
 import pandas as pd
 from .models import EntityGroup
+from .predicates import is_hose, is_tube
 
 def _format_number(value: float) -> str:
     return str(int(value)) if math.isclose(value, round(value)) else f"{value:g}"
@@ -30,11 +31,13 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
     details = pd.DataFrame(detail_rows)
 
     aggregated: dict[tuple[str, str, str], float] = {}
+    length_keys: set[tuple[str, str, str]] = set()
     for group in groups:
         if group.name == "IGNORE" or re.fullmatch(r"顏色_\d+", str(group.name).strip()):
             continue
         key = (group.name, group.size, group.material)
-        if group.name in {"Tube", "Coil Tube", "Hose", "軟管"}:
+        if is_tube(group) or is_hose(group):
+            length_keys.add(key)
             # 沒有合法長度文字的圖元數量為 0，不以幾何長度臆測。
             if group.quantity <= 0:
                 continue
@@ -44,7 +47,8 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
 
     bom_rows = []
     for (name, size, material), quantity in aggregated.items():
-        display_quantity = f"{_format_number(quantity)}M" if name in {"Tube", "Coil Tube", "Hose", "軟管"} else int(quantity)
+        key = (name, size, material)
+        display_quantity = f"{_format_number(quantity)}M" if key in length_keys else int(quantity)
         bom_rows.append({"品名": name, "尺寸": size, "材質": material, "數量": display_quantity})
     return pd.DataFrame(bom_rows, columns=["品名", "尺寸", "材質", "數量"]), details
 

@@ -14,6 +14,7 @@ CIRCLE_SAMPLE_STEPS = 72
 ARC_SAMPLE_STEPS = 36
 MIN_ARC_SAMPLE_STEPS = 8
 COMPONENT_SIZE_SCORE_WEIGHT = 100.0
+SMALL_SEGMENT_GROUP_THRESHOLD = 5
 TUBE_COLOR = "顏色_30"
 COMPONENT_TYPE_TUBE = "Tube類"
 COMPONENT_TYPE_REDUCER = "Reducer類"
@@ -31,11 +32,17 @@ ADJACENCY_OUTPUT_SUFFIX = "_adjacency.csv"
 # 依 GAS零件圖塊對照表_v5 更新；此映射只屬於本程式。
 COLOR_COMPONENT_MAP = {
     "顏色_30": {"name": "Tube", "type": COMPONENT_TYPE_TUBE},
+    "顏色_51": {"name": "雙套管", "type": COMPONENT_TYPE_TUBE},
+    "顏色_133": {"name": "Coil Tube", "type": COMPONENT_TYPE_TUBE},
+    "顏色_215": {"name": "雙套管", "type": COMPONENT_TYPE_TUBE},
     "顏色_181": {"name": "Ball-valve"},
     "顏色_3": {"name": "Dia-valve"},
     "顏色_24": {"name": "Bellow valve"},
     "顏色_212": {"name": "C.V"},
     "顏色_140": {"name": "3P Regulator"},
+    "顏色_55": {"name": "SWG plug", "type": COMPONENT_TYPE_GENERAL},
+    "顏色_125": {"name": "VCR plug", "type": COMPONENT_TYPE_GENERAL},
+    "顏色_131": {"name": "STOP SPACER", "type": COMPONENT_TYPE_GENERAL},
     "顏色_5": {"name": "Reducer", "type": COMPONENT_TYPE_REDUCER},
     "顏色_16": {"name": "ELBOW"},
     "顏色_1": {"name": "Nut(F)"},
