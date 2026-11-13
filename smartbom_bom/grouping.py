@@ -4,9 +4,10 @@ from collections import deque
 from typing import Sequence
 import numpy as np
 import pandas as pd
-from .config import COLOR_COMPONENT_MAP, TUBE_COLOR
+from .config import COLOR_COMPONENT_MAP, COMPONENT_TYPE_TUBE, TUBE_COLOR
 from .models import EntityGroup, Geometry
 from .geometry import component_center, geometry_distance, cluster_geometries, remove_duplicate_lines, row_to_geometry
+from .predicates import infer_component_type
 
 def build_entity_groups(
     df: pd.DataFrame,
@@ -18,19 +19,33 @@ def build_entity_groups(
     component_map = COLOR_COMPONENT_MAP if component_map is None else component_map
     geometries = [geometry for index, row in df.iterrows() if (geometry := row_to_geometry(int(index), row))]
     geometries, removed_rows = remove_duplicate_lines(geometries, duplicate_tolerance)
-    tubes = [geometry for geometry in geometries if geometry.color == tube_color]
-    components = [geometry for geometry in geometries if geometry.color != tube_color]
+    def definition(color: str) -> tuple[str, str]:
+        configured = component_map.get(color, {})
+        name = configured.get("name", color)
+        component_type = configured.get("type") or (
+            COMPONENT_TYPE_TUBE if color == tube_color else infer_component_type(name, color)
+        )
+        return name, component_type
 
-    raw_groups: list[tuple[str, str, list[Geometry]]] = []
-    # 規格要求：每個顏色 30 圖元本身就是一組，不先彼此聚類。
-    raw_groups.extend(("Tube", tube_color, [geometry]) for geometry in tubes)
+    tubes = [
+        geometry for geometry in geometries
+        if definition(geometry.color)[1] == COMPONENT_TYPE_TUBE
+    ]
+    components = [
+        geometry for geometry in geometries
+        if definition(geometry.color)[1] != COMPONENT_TYPE_TUBE
+    ]
+
+    raw_groups: list[tuple[str, str, str, list[Geometry]]] = []
+    # 使用者標示為 Tube 類的每個圖元本身就是一組。
+    raw_groups.extend((*definition(geometry.color), geometry.color, [geometry]) for geometry in tubes)
     for cluster in cluster_geometries(components, tolerance):
         color = cluster[0].color
-        component_name = component_map.get(color, {}).get("name", color)
-        raw_groups.append((component_name, color, cluster))
+        component_name, component_type = definition(color)
+        raw_groups.append((component_name, component_type, color, cluster))
 
     groups = []
-    for group_id, (name, color, items) in enumerate(raw_groups):
+    for group_id, (name, component_type, color, items) in enumerate(raw_groups):
         groups.append(EntityGroup(
             group_id=group_id,
             name=name,
@@ -38,6 +53,7 @@ def build_entity_groups(
             geometries=items,
             center=component_center(items),
             source_rows=[item.row_index for item in items],
+            component_type=component_type,
         ))
     return groups, removed_rows
 

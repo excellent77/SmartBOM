@@ -18,7 +18,10 @@ import pandas as pd
 
 from .models import BomAnalysisResult, EntityGroup
 from .grouping import _components_for_nodes
-from .predicates import canonical_name, is_gauge, is_hose, is_size_boundary, is_special_rtee
+from .predicates import (
+    canonical_name, has_fixed_quarter_inch_size, is_gauge, is_hose,
+    is_size_boundary, is_tube,
+)
 from .reporting import BomReportBuilder
 from .text import FINISH_MATERIAL_NAMES, _extract_size, _normalize_size, _tube_description
 
@@ -110,12 +113,12 @@ def _reviewable(group: EntityGroup) -> bool:
 
 
 def _segment_defaults(groups: list[EntityGroup]) -> tuple[str, str]:
-    tubes = [group for group in groups if canonical_name(group.name) in {"tube", "coil tube"}]
+    tubes = [group for group in groups if is_tube(group)]
     size_values = [group.size for group in tubes if group.size]
     if not size_values:
         size_values = [
             group.size for group in groups
-            if group.size and not is_gauge(group) and not is_special_rtee(group) and not is_hose(group)
+            if group.size and not is_gauge(group) and not is_hose(group)
         ]
     material_values = [group.material for group in tubes if group.material]
     if not material_values:
@@ -131,14 +134,12 @@ def _segment_defaults(groups: list[EntityGroup]) -> tuple[str, str]:
 def _group_mismatches(group: EntityGroup) -> list[str]:
     """比較元件配對文字與其最終欄位，回傳每項差異的說明。
 
-    實際比較採用元件最終欄位，避免 Gauge、Hose、Xx1/4 等合法特殊規則被誤報。
+    實際比較採用元件最終欄位，避免 Gauge 與 Hose 等合法特殊規則被誤報。
     """
     if not group.matched_text:
         return []
     evidence_size, evidence_material = _text_evidence(group.matched_text)
     target_size = _normalize_size(group.size) if group.size else ""
-    if is_special_rtee(group) and "x" in target_size.casefold():
-        target_size = re.split(r"[xX×]", target_size, maxsplit=1)[0]
     target_material = re.sub(r"\s+", " ", group.material.strip()).upper()
     issues = []
     if evidence_size and target_size and _normalize_size(evidence_size) != target_size:
@@ -174,10 +175,12 @@ def _dimension_key(value: str) -> tuple[int, float, str]:
 
 
 def canonical_reducer_size(values: Sequence[str]) -> str:
-    """將 Reducer 相鄰尺寸去重並以固定順序組合，消除 A×B／B×A 差異。"""
+    """只在 Reducer 所有方向剛好得到兩種尺寸時組合。"""
     unique = list(dict.fromkeys(_normalize_size(value) for value in values if value))
+    if len(unique) != 2:
+        return ""
     ordered = sorted(unique, key=_dimension_key, reverse=True)
-    return "x".join(ordered[:2])
+    return "x".join(ordered)
 
 
 class ConnectivityReviewService:
@@ -300,17 +303,12 @@ class ConnectivityReviewService:
         if not _reviewable(group):
             return
         canonical = canonical_name(group.name)
-        gauge_gasket = canonical == "gasket" and any(
-            is_gauge(groups[neighbor]) for neighbor in adjacency[group.group_id]
-        )
-        if is_gauge(group) or gauge_gasket:
+        if has_fixed_quarter_inch_size(group, groups, adjacency):
             group.size = '1/4"'
-        elif is_special_rtee(group):
-            group.size = f'{segment.size}x1/4"' if segment.size else 'x1/4"'
         elif not is_hose(group):
             group.size = segment.size
 
-        if canonical in {"tube", "coil tube"} or canonical in FINISH_MATERIAL_NAMES:
+        if is_tube(group) or is_size_boundary(group) or canonical in FINISH_MATERIAL_NAMES:
             group.material = segment.specification
 
     @staticmethod
@@ -322,13 +320,22 @@ class ConnectivityReviewService:
         for group in groups:
             if not is_size_boundary(group):
                 continue
-            adjacent_segments = {
-                segment_by_node[neighbor].segment_id: segment_by_node[neighbor]
-                for neighbor in adjacency[group.group_id]
-                if neighbor in segment_by_node
-            }
-            group.size = canonical_reducer_size(
-                segment.size for segment in adjacent_segments.values()
-            )
+            neighbor_sizes = []
+            for neighbor in sorted(adjacency[group.group_id]):
+                if neighbor not in segment_by_node:
+                    continue
+                neighbor_group = groups[neighbor]
+                size = (
+                    '1/4"'
+                    if has_fixed_quarter_inch_size(neighbor_group, groups, adjacency)
+                    else segment_by_node[neighbor].size
+                )
+                if size:
+                    neighbor_sizes.append(size)
+            group.size = canonical_reducer_size(neighbor_sizes)
             if not group.size:
-                group.notes.append(f"{group.name} 找不到相鄰連通塊尺寸")
+                found = "、".join(dict.fromkeys(size for size in neighbor_sizes if size)) or "無"
+                raise ValueError(
+                    f"G{group.group_id}:{group.name} 為 Reducer類，但相鄰方向"
+                    f"不是剛好兩種尺寸（找到：{found}）"
+                )

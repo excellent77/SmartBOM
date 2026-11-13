@@ -15,6 +15,14 @@ ARC_SAMPLE_STEPS = 36
 MIN_ARC_SAMPLE_STEPS = 8
 COMPONENT_SIZE_SCORE_WEIGHT = 100.0
 TUBE_COLOR = "顏色_30"
+COMPONENT_TYPE_TUBE = "Tube類"
+COMPONENT_TYPE_REDUCER = "Reducer類"
+COMPONENT_TYPE_GENERAL = "一般元件"
+COMPONENT_TYPES = {
+    COMPONENT_TYPE_TUBE,
+    COMPONENT_TYPE_REDUCER,
+    COMPONENT_TYPE_GENERAL,
+}
 BOM_OUTPUT_SUFFIX = "_bom.csv"
 DETAILS_OUTPUT_SUFFIX = "_details.csv"
 ADJACENCY_OUTPUT_SUFFIX = "_adjacency.csv"
@@ -22,30 +30,31 @@ ADJACENCY_OUTPUT_SUFFIX = "_adjacency.csv"
 
 # 依 GAS零件圖塊對照表_v5 更新；此映射只屬於本程式。
 COLOR_COMPONENT_MAP = {
+    "顏色_30": {"name": "Tube", "type": COMPONENT_TYPE_TUBE},
     "顏色_181": {"name": "Ball-valve"},
     "顏色_3": {"name": "Dia-valve"},
     "顏色_24": {"name": "Bellow valve"},
     "顏色_212": {"name": "C.V"},
     "顏色_140": {"name": "3P Regulator"},
-    "顏色_5": {"name": "Reducer"},
+    "顏色_5": {"name": "Reducer", "type": COMPONENT_TYPE_REDUCER},
     "顏色_16": {"name": "ELBOW"},
     "顏色_1": {"name": "Nut(F)"},
     "顏色_8": {"name": "NUT(M)"},
     "顏色_142": {"name": "S-Gland"},
     "顏色_11": {"name": "L-Gland"},
     "顏色_165": {"name": "Gasket"},
-    "顏色_171": {"name": "Union R.Tee"},
+    "顏色_171": {"name": "Union R.Tee", "type": COMPONENT_TYPE_REDUCER},
     "顏色_241": {"name": "Union Tee"},
     "顏色_67": {"name": "Union"},
-    "顏色_211": {"name": "Reducer-Union"},
+    "顏色_211": {"name": "Reducer-Union", "type": COMPONENT_TYPE_REDUCER},
     "顏色_4": {"name": "軟管"},
     "顏色_37": {"name": "Cap"},
     "顏色_6": {"name": "Regulator(SWG)"},
     "顏色_122": {"name": "Regulator(FVCR)"},
     "顏色_33": {"name": "Tee"},
-    "顏色_104": {"name": "R.Tee"},
+    "顏色_104": {"name": "R.Tee", "type": COMPONENT_TYPE_REDUCER},
     "顏色_153": {"name": "VCR Tee"},
-    "顏色_225": {"name": "VCR R.Tee"},
+    "顏色_225": {"name": "VCR R.Tee", "type": COMPONENT_TYPE_REDUCER},
     "顏色_40": {"name": "SWG Gauge(背接式)"},
     "顏色_192": {"name": "VCR Gauge(背接式)"},
     "顏色_252": {"name": "IGNORE"},  # 表上註記「不須列入計算的材料」，應在後製時直接排除，不當成 BOM 品項

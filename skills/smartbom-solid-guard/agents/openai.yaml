@@ -1,0 +1,4 @@
+interface:
+  display_name: "SmartBOM SOLID Guard"
+  short_description: "修改 SmartBOM 程式碼前中後執行 SOLID 架構檢查"
+  default_prompt: "依 SmartBOM SOLID Guard 流程完成程式修改並驗證架構品質。"

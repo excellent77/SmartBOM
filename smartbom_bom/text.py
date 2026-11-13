@@ -4,9 +4,9 @@ import math
 import re
 from typing import Sequence
 import pandas as pd
-from .config import TEXT_TYPES, TUBE_COLOR
+from .config import TEXT_TYPES
 from .models import EntityGroup
-from .predicates import is_size_boundary
+from .predicates import is_size_boundary, is_tube
 from .geometry import _number, _point
 
 def clean_dxf_text(value: str) -> str:
@@ -42,7 +42,7 @@ def extract_texts(df: pd.DataFrame) -> list[dict]:
 
 FINISH_MATERIAL_NAMES = {
     "tee", "r.tee", "r tee", "reducer", "elbow", "s gland",
-    "s-gland", "l gland", "l-gland", "cap",
+    "s-gland", "l gland", "l-gland", "l_gland",
 }
 
 SIZE_TOKEN = r'(?:\d+(?:/\d+)?"|\d+(?:\.\d+)?A|\d+(?:\.\d+)?\s*mm)'
@@ -142,7 +142,7 @@ def assign_nearest_text_to_groups(groups: Sequence[EntityGroup], texts: Sequence
 
     result = {}
     for group in groups:
-        if group.color == TUBE_COLOR or is_size_boundary(group):
+        if is_tube(group) or is_size_boundary(group):
             continue
         best = _best_text_match(group.center, size_texts)
         if best:

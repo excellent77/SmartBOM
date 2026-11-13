@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from ezdxf import colors as aci_colors
-from .config import TUBE_COLOR
+from .config import COMPONENT_TYPE_TUBE, TUBE_COLOR
 from .geometry import row_to_geometry
 from .models import Geometry
 from .text import extract_texts
@@ -194,7 +194,9 @@ def build_debug_figure(
     component_spans = [
         float(np.ptp(polygon, axis=0).max()) - 2 * pad
         for _, polygon, row in regions
-        if row["品名"] != "IGNORE" and row["顏色"] != TUBE_COLOR
+        if row["品名"] != "IGNORE"
+        and row.get("元件類型", "") != COMPONENT_TYPE_TUBE
+        and not ("元件類型" not in row and row["顏色"] == TUBE_COLOR)
     ]
     drawing_width = max(float(extent[0]), 1e-6)
     scale = PLOT_WIDTH_RANGE[0] / drawing_width
@@ -241,7 +243,11 @@ def build_debug_figure(
     # 讓小元件不會被面板外框或穿過它的管線蓋住。
     def draw_order(item: tuple[float, np.ndarray, pd.Series]) -> tuple[int, float]:
         area, _, row = item
-        layer = 0 if row["品名"] == "IGNORE" else 1 if row["顏色"] == TUBE_COLOR else 2
+        row_is_tube = (
+            row.get("元件類型", "") == COMPONENT_TYPE_TUBE
+            or ("元件類型" not in row and row["顏色"] == TUBE_COLOR)
+        )
+        layer = 0 if row["品名"] == "IGNORE" else 1 if row_is_tube else 2
         return layer, -area
 
     label_candidates: dict[int, list[np.ndarray]] = {}

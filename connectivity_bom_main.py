@@ -4,13 +4,21 @@ UI 只負責上傳、呈現及收集修改；連通塊分析與修正规則由
 ConnectivityReviewService 負責，BOM 核心仍由 BomApplicationService 提供。
 """
 
+from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
 
 from smartbom_bom import BomApplicationService, ConnectivityReviewService, ReviewSession
-from smartbom_bom.config import ADJACENCY_OUTPUT_SUFFIX, BOM_OUTPUT_SUFFIX, DETAILS_OUTPUT_SUFFIX
+from smartbom_bom.config import (
+    ADJACENCY_OUTPUT_SUFFIX, BOM_OUTPUT_SUFFIX, COLOR_COMPONENT_MAP,
+    COMPONENT_TYPES, COMPONENT_TYPE_GENERAL, COMPONENT_TYPE_REDUCER,
+    COMPONENT_TYPE_TUBE, DETAILS_OUTPUT_SUFFIX, BomSettings,
+)
+from smartbom_bom.geometry import row_to_geometry
+from smartbom_bom.predicates import infer_component_type
 from smartbom_bom.visualization import build_debug_figure, figure_to_html
 
 
@@ -18,11 +26,29 @@ SUPPORTED_EXTENSIONS = {".dxf", ".dwg", ".csv"}
 REVIEW_COLUMNS = [
     "優先順序", "連通塊", "風險標記", "尺寸", "規格", "元件摘要",
 ]
+COMPONENT_MAPPING_COLUMNS = ["元件顏色", "元件名稱", "元件類型"]
+COMPONENT_TYPE_OPTIONS = [
+    COMPONENT_TYPE_TUBE, COMPONENT_TYPE_REDUCER, COMPONENT_TYPE_GENERAL,
+]
 EMPTY_BOM = pd.DataFrame(columns=["品名", "尺寸", "材質", "數量"])
 EMPTY_REVIEW = pd.DataFrame(columns=REVIEW_COLUMNS)
 EMPTY_DETAILS = pd.DataFrame()
 EMPTY_ADJACENCY = pd.DataFrame()
 EMPTY_FIGURE = ""
+EMPTY_COMPONENT_MAPPING = pd.DataFrame(columns=COMPONENT_MAPPING_COLUMNS)
+UI_CSS = """
+#review-table textarea {font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+#confirm-review {min-height:48px;font-weight:700}
+"""
+
+
+@dataclass(slots=True)
+class PreparedUpload:
+    """已載入但尚未進行 BOM 分析的圖面。"""
+
+    source: Path
+    vectors: pd.DataFrame
+    colors: tuple[str, ...]
 
 
 def _output_paths(source: Path) -> list[str]:
@@ -45,36 +71,130 @@ def _as_frame(value: object) -> pd.DataFrame:
     return pd.DataFrame(value, columns=REVIEW_COLUMNS)
 
 
-def analyze_uploaded_file(file_path: str | Path | None):
-    """自動分析上傳檔案，但先不輸出最終 BOM，等待人工覆核。"""
-    empty = (
-        EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS,
-        EMPTY_ADJACENCY, EMPTY_BOM, [], None,
-    )
+def _as_component_frame(value: object) -> pd.DataFrame:
+    """統一 Gradio 可能回傳的元件對照表格式。"""
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    if isinstance(value, dict):
+        return pd.DataFrame(value)
+    if value is None:
+        return EMPTY_COMPONENT_MAPPING.copy()
+    return pd.DataFrame(value, columns=COMPONENT_MAPPING_COLUMNS)
+
+
+def _color_sort_key(color: str) -> tuple[int, int | str]:
+    match = re.fullmatch(r"顏色_(\d+)", str(color).strip())
+    return (0, int(match.group(1))) if match else (1, str(color))
+
+
+def _component_mapping_for_colors(colors: tuple[str, ...]) -> pd.DataFrame:
+    """已知顏色預填現行映射；未知顏色名稱留空等待使用者。"""
+    rows = []
+    for color in colors:
+        configured = COLOR_COMPONENT_MAP.get(color, {})
+        name = str(configured.get("name", "")).strip()
+        component_type = configured.get("type") or infer_component_type(name, color)
+        rows.append({
+            "元件顏色": color,
+            "元件名稱": name,
+            "元件類型": component_type,
+        })
+    return pd.DataFrame(rows, columns=COMPONENT_MAPPING_COLUMNS)
+
+
+def prepare_uploaded_file(file_path: str | Path | None):
+    """只載入圖面並建立元件顏色對照表，尚不執行後續分析。"""
     if not file_path:
-        return ("請先上傳 DXF、DWG 或向量 CSV。", *empty)
+        return "請先上傳 DXF、DWG 或向量 CSV。", EMPTY_COMPONENT_MAPPING, None
 
     source = Path(str(file_path))
     if source.suffix.casefold() not in SUPPORTED_EXTENSIONS:
         supported = "、".join(sorted(SUPPORTED_EXTENSIONS))
-        return (
-            f"❌ 不支援的檔案格式：{source.suffix or '無副檔名'}；請使用 {supported}。",
-            *empty,
-        )
+        return f"❌ 不支援的檔案格式：{source.suffix or '無副檔名'}；請使用 {supported}。", EMPTY_COMPONENT_MAPPING, None
 
     try:
         service = BomApplicationService.create_default()
         vectors = service.loader.load(source)
-        result = service.analyze(vectors)
+        colors = tuple(sorted({
+            geometry.color
+            for index, row in vectors.iterrows()
+            if (geometry := row_to_geometry(int(index), row)) is not None
+        }, key=_color_sort_key))
+        if not colors:
+            raise ValueError("圖面中找不到可用幾何圖元")
+        mapping = _component_mapping_for_colors(colors)
+        unknown = int((mapping["元件名稱"].str.strip() == "").sum())
+        status = (
+            f"✅ **圖面已載入：{source.name}**  \n"
+            f"- 找到 {len(colors)} 種圖元顏色  \n"
+            f"- 其中 {unknown} 種尚無元件名稱  \n"
+            "- 請完成第一頁的每一格，再按 **確認元件對照並開始分析**。"
+        )
+        return status, mapping, PreparedUpload(source, vectors, colors)
+    except Exception as exc:
+        return f"❌ **載入失敗**：{type(exc).__name__}: {exc}", EMPTY_COMPONENT_MAPPING, None
+
+
+def _validated_component_map(value: object, expected_colors: tuple[str, ...]) -> dict[str, dict[str, str]]:
+    frame = _as_component_frame(value).fillna("")
+    missing_columns = [column for column in COMPONENT_MAPPING_COLUMNS if column not in frame.columns]
+    if missing_columns:
+        raise ValueError("元件對照表缺少欄位：" + "、".join(missing_columns))
+    frame = frame[COMPONENT_MAPPING_COLUMNS].astype(str)
+    for column in COMPONENT_MAPPING_COLUMNS:
+        frame[column] = frame[column].str.strip()
+    if frame.empty:
+        raise ValueError("元件對照表不可為空")
+    empty_cells = [
+        f"第{index + 1}列的{column}"
+        for index, row in frame.iterrows()
+        for column in COMPONENT_MAPPING_COLUMNS if not row[column]
+    ]
+    if empty_cells:
+        raise ValueError("以下欄位尚未填寫：" + "、".join(empty_cells[:20]))
+    duplicates = frame[frame["元件顏色"].duplicated()]["元件顏色"].tolist()
+    if duplicates:
+        raise ValueError("元件顏色重複：" + "、".join(duplicates))
+    supplied = set(frame["元件顏色"])
+    expected = set(expected_colors)
+    if supplied != expected:
+        raise ValueError(
+            f"元件顏色與圖面不一致；缺少：{sorted(expected - supplied)}；"
+            f"多出：{sorted(supplied - expected)}"
+        )
+    invalid_types = sorted(set(frame["元件類型"]) - COMPONENT_TYPES)
+    if invalid_types:
+        raise ValueError(
+            "元件類型只能是 Tube類、Reducer類或一般元件；無效值："
+            + "、".join(invalid_types)
+        )
+    return {
+        row["元件顏色"]: {
+            "name": row["元件名稱"], "type": row["元件類型"],
+        }
+        for _, row in frame.iterrows()
+    }
+
+
+def analyze_component_mapping(component_mapping: object, prepared: PreparedUpload | None):
+    """驗證使用者完成的對照表，通過後才執行 BOM 分析。"""
+    empty = (EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_BOM, [], None)
+    if prepared is None:
+        return ("❌ 尚未載入可分析的圖面。", *empty)
+    try:
+        component_map = _validated_component_map(component_mapping, prepared.colors)
+        settings = BomSettings(color_component_map=component_map)
+        service = BomApplicationService.create_default(settings)
+        result = service.analyze(prepared.vectors)
         review_service = ConnectivityReviewService(service.report_builder)
-        session = review_service.create_session(source, vectors, result)
+        session = review_service.create_session(prepared.source, prepared.vectors, result)
         review_frame = review_service.to_frame(session)
         figure = figure_to_html(
-            build_debug_figure(vectors, result.details, result.bom, session.segments)
+            build_debug_figure(prepared.vectors, result.details, result.bom, session.segments)
         )
         adjacency = result.adjacency.reset_index()
         status = (
-            f"✅ **自動分析完成：{source.name}**  \n"
+            f"✅ **元件對照已確認，自動分析完成：{prepared.source.name}**  \n"
             f"- 找到 {len(session.segments)} 個 Reducer 分段連通塊  \n"
             "- 請依圖面覆核下方「尺寸」與「規格」欄，完成後按 **確認修改並產生 BOM**。"
         )
@@ -84,6 +204,46 @@ def analyze_uploaded_file(file_path: str | Path | None):
         )
     except Exception as exc:
         return (f"❌ **分析失敗**：{type(exc).__name__}: {exc}", *empty)
+
+
+def analyze_uploaded_file(file_path: str | Path | None):
+    """保留程式化相容入口；介面本身仍強制兩階段確認。"""
+    status, mapping, prepared = prepare_uploaded_file(file_path)
+    if prepared is None:
+        empty = (EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_BOM, [], None)
+        return (status, *empty)
+    return analyze_component_mapping(mapping, prepared)
+
+
+def prepare_interface_file(file_path: str | Path | None):
+    """上傳新圖面時同時清空上一次分析結果。"""
+    status, _mapping, prepared = prepare_uploaded_file(file_path)
+    return (
+        status, prepared, EMPTY_FIGURE, EMPTY_REVIEW,
+        EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_BOM, [], None,
+    )
+
+
+def analyze_component_inputs(prepared: PreparedUpload | None, *values: object):
+    """將動態產生的名稱輸入與類型選單組回對照表。"""
+    if prepared is None:
+        return analyze_component_mapping(EMPTY_COMPONENT_MAPPING, None)
+    expected_values = len(prepared.colors) * 2
+    if len(values) != expected_values:
+        empty = (EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS, EMPTY_ADJACENCY, EMPTY_BOM, [], None)
+        return (
+            f"❌ **分析失敗**：元件對照輸入數量異常，"
+            f"預期 {expected_values} 格，實際 {len(values)} 格。",
+            *empty,
+        )
+    rows = []
+    for index, color in enumerate(prepared.colors):
+        rows.append({
+            "元件顏色": color,
+            "元件名稱": values[index * 2],
+            "元件類型": values[index * 2 + 1],
+        })
+    return analyze_component_mapping(pd.DataFrame(rows), prepared)
 
 
 def confirm_review(edited_review: object, session: ReviewSession | None):
@@ -108,8 +268,8 @@ def confirm_review(edited_review: object, session: ReviewSession | None):
             "✅ **人工覆核已套用，最終 BOM 已產生。**  \n"
             f"- BOM：{len(result.bom)} 筆  \n"
             f"- 已排除顏色名稱元件組：{removed_unknown} 組  \n"
-            "- Gauge、Gauge 相連 Gasket、Xx1/4\" 特殊元件維持固定尺寸規則；"
-            "Reducer 尺寸已依修正後相鄰連通塊重新整理。"
+            "- Gauge 與 Gauge 相連 Gasket 維持 1/4\" 固定尺寸；"
+            "Reducer類尺寸已依所有方向的兩種連通塊尺寸重建。"
         )
         return (
             status, figure, review_service.to_frame(session), result.details, result.bom,
@@ -136,16 +296,12 @@ def create_interface() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError("尚未安裝 Gradio，請先安裝 requirements.txt 內的相依套件。") from exc
 
-    css = """
-    #review-table textarea {font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-    #confirm-review {min-height:48px;font-weight:700}
-    """
-
-    with gr.Blocks(title="SmartBOM 人工覆核與 BOM 產生", css=css) as demo:
+    with gr.Blocks(title="SmartBOM 人工覆核與 BOM 產生") as demo:
+        prepared_state = gr.State(value=None)
         review_state = gr.State(value=None)
         gr.Markdown(
             "# SmartBOM 人工覆核與 BOM 產生\n"
-            "上傳圖檔後先檢查 Reducer 分段連通塊；系統不會在人工確認前將自動結果視為最終 BOM。"
+            "上傳圖檔後先確認元件顏色對照，再進行連通塊分析與人工覆核。"
         )
 
         with gr.Row():
@@ -157,7 +313,62 @@ def create_interface() -> Any:
             status = gr.Markdown("請上傳檔案開始分析。")
 
         with gr.Tabs():
-            with gr.Tab("① 互動檢視與連通塊覆核"):
+            with gr.Tab("① 元件顏色與類型"):
+                gr.Markdown(
+                    "請確認這次圖面中每種顏色的元件名稱與類型。"
+                    "已存在於 `COLOR_COMPONENT_MAP` 的顏色會自動預填；新顏色的名稱留空。\n\n"
+                    "「元件類型」請由下拉選單選擇 **Tube類**、**Reducer類** 或 **一般元件**。"
+                    "Tube類會使用管線文字配對；Reducer類會作為連通塊的尺寸邊界。"
+                )
+
+                @gr.render(inputs=prepared_state)
+                def render_component_mapping(prepared: PreparedUpload | None):
+                    if prepared is None:
+                        gr.Markdown("上傳圖檔後，這裡會顯示本次圖面的元件對照表。")
+                        return
+                    defaults = _component_mapping_for_colors(prepared.colors).set_index("元件顏色")
+                    editors = []
+                    with gr.Row(key="component-mapping-header"):
+                        with gr.Column(scale=1):
+                            gr.Markdown("**元件顏色**")
+                        with gr.Column(scale=2):
+                            gr.Markdown("**元件名稱**")
+                        with gr.Column(scale=2):
+                            gr.Markdown("**元件類型**")
+                    for index, color in enumerate(prepared.colors):
+                        default = defaults.loc[color]
+                        with gr.Row(key=f"component-mapping-{index}"):
+                            gr.Textbox(
+                                value=color, interactive=False, show_label=False,
+                                container=False, scale=1, key=f"component-color-{color}",
+                            )
+                            name = gr.Textbox(
+                                value=default["元件名稱"], show_label=False,
+                                container=False, scale=2, key=f"component-name-{color}",
+                            )
+                            component_type = gr.Radio(
+                                choices=COMPONENT_TYPE_OPTIONS,
+                                value=default["元件類型"],
+                                interactive=True, show_label=False,
+                                container=False, scale=2,
+                                key=f"component-type-{color}",
+                            )
+                        editors.extend([name, component_type])
+                    analyze_button = gr.Button(
+                        "確認元件對照並開始分析",
+                        variant="primary", key="analyze-component-mapping",
+                    )
+                    analyze_button.click(
+                        fn=analyze_component_inputs,
+                        inputs=[prepared_state, *editors],
+                        outputs=[
+                            status, debug_plot, review_table, details_table,
+                            adjacency_table, bom_table, downloads, review_state,
+                        ],
+                        show_progress="full", key="analyze-component-mapping-click",
+                    )
+
+            with gr.Tab("② 互動檢視與連通塊覆核"):
                 gr.Markdown(
                     "原始圖元線色維持 DXF 顏色，連通塊仍依原配色標示；"
                     "圖上黑色 C01、C02 標籤代表 Reducer 分段連通塊。"
@@ -188,18 +399,18 @@ def create_interface() -> Any:
                     file_count="multiple", interactive=False,
                 )
 
-            with gr.Tab("② 圖元組明細"):
+            with gr.Tab("③ 圖元組明細"):
                 details_table = gr.Dataframe(value=EMPTY_DETAILS, interactive=False, wrap=True)
-            with gr.Tab("③ 鄰接矩陣"):
+            with gr.Tab("④ 鄰接矩陣"):
                 adjacency_table = gr.Dataframe(value=EMPTY_ADJACENCY, interactive=False, wrap=False)
 
         clear_button = gr.Button("清除目前圖面")
         upload_outputs = [
-            status, debug_plot, review_table, details_table,
-            adjacency_table, bom_table, downloads, review_state,
+            status, prepared_state, debug_plot, review_table,
+            details_table, adjacency_table, bom_table, downloads, review_state,
         ]
         upload.upload(
-            fn=analyze_uploaded_file, inputs=upload, outputs=upload_outputs,
+            fn=prepare_interface_file, inputs=upload, outputs=upload_outputs,
             show_progress="full",
         )
         confirm_button.click(
@@ -212,9 +423,9 @@ def create_interface() -> Any:
         )
         clear_button.click(
             fn=lambda: (
-                "請上傳檔案開始分析。", EMPTY_FIGURE,
-                EMPTY_REVIEW, EMPTY_DETAILS, EMPTY_ADJACENCY,
-                EMPTY_BOM, [], None,
+                "請上傳檔案開始分析。", None,
+                EMPTY_FIGURE, EMPTY_REVIEW, EMPTY_DETAILS,
+                EMPTY_ADJACENCY, EMPTY_BOM, [], None,
             ),
             outputs=upload_outputs, queue=False,
         )
@@ -224,7 +435,7 @@ def create_interface() -> Any:
 
 def main() -> None:
     """啟動 Gradio 網頁介面。"""
-    create_interface().queue().launch()
+    create_interface().queue().launch(css=UI_CSS)
 
 
 if __name__ == "__main__":

@@ -5,10 +5,10 @@ from typing import Sequence
 import numpy as np
 from scipy.optimize import Bounds, LinearConstraint, milp as ilp
 from scipy.sparse import lil_matrix
-from .config import COMPONENT_SIZE_SCORE_WEIGHT, TUBE_COLOR
+from .config import COMPONENT_SIZE_SCORE_WEIGHT
 from .models import EntityGroup
 from .grouping import _components_for_nodes
-from .predicates import is_size_boundary
+from .predicates import is_size_boundary, is_tube
 from .text import _tube_description
 
 def assign_tube_descriptions(
@@ -25,7 +25,7 @@ def assign_tube_descriptions(
     每段合法 Tube 文字必須恰好配對一次，每個 Tube 至多接受一段文字；
     若無法滿足全部配對與規格限制，回報無可行解。
     """
-    tube_groups = [group for group in groups if group.color == TUBE_COLOR]
+    tube_groups = [group for group in groups if is_tube(group)]
     pending = [
         (text, description)
         for text in texts

@@ -16,6 +16,7 @@ def make_reports(groups: Sequence[EntityGroup]) -> tuple[pd.DataFrame, pd.DataFr
             "群組編號": group.group_id,
             "品名": group.name,
             "顏色": group.color,
+            "元件類型": group.component_type,
             "尺寸": group.size,
             "材質": group.material,
             "原始數量": group.quantity,

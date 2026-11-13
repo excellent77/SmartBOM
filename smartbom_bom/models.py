@@ -26,6 +26,7 @@ class EntityGroup:
     geometries: list[Geometry]
     center: tuple[float, float]
     source_rows: list[int]
+    component_type: str = ""
     size: str = ""
     material: str = ""
     quantity: float = 1.0

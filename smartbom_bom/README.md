@@ -20,6 +20,7 @@
 | `review.py` | Reducer 分段、風險排序、人工修正與 BOM 重建 | `ConnectivityReviewService` |
 | `visualization.py` | 原圖、連通塊覆蓋色與 hover 資訊 | `build_debug_figure` |
 | `service.py` | 串聯完整使用案例 | `BomApplicationService` |
+| `batch.py` | 發現單線圖並批次產生報表 | `run_directory` |
 
 ## SOLID 對應
 
@@ -37,6 +38,22 @@
 from connectivity_bom_main import main
 
 main("./data/10_單線圖_HALYLP2200_SG.dxf")
+~~~
+
+批次處理 `./data/data_new` 內所有單線圖：
+
+~~~bash
+python connectivity_bom_batch.py
+~~~
+
+每張圖會在原資料夾產生 `<檔名>_bom.csv`、`<檔名>_details.csv` 與
+`<檔名>_adjacency.csv`。也可在 Python 內指定其他資料夾：
+
+~~~python
+from smartbom_bom import run_directory
+
+summary = run_directory("./data/data_new", progress=print)
+print(summary)
 ~~~
 
 只分析、不寫檔：
@@ -73,10 +90,12 @@ result = service.run("drawing.dxf")
 
 `connectivity_bom_main.py` 採用兩階段流程：
 
-1. 上傳檔案後執行自動分析，但不立即發布 BOM。
-2. 以 Reducer／Reducer-Union 為邊界建立連通塊。
-3. 依文字證據差異數排序，並標示小型連通塊。
-4. 使用者只修改連通塊的尺寸與規格。
-5. `ConnectivityReviewService` 將修正值回寫至受連通塊控制的元件。
-6. 固定 Gauge、Gauge Gasket、R.Tee 與 Hose 規則保持不變。
-7. 重新計算 Reducer 尺寸、排除 `顏色_XXX` 元件後才建立最終 BOM。
+1. 上傳檔案後先列出本次圖面所有元件顏色。
+2. 使用者輸入元件名稱，並由下拉選單選擇 `Tube類／Reducer類／一般元件`；每列完成後才能分析。
+3. 確認對照後才執行幾何分組、文字配對與鄰接分析；Tube類不參與一般元件配對，Reducer類作為尺寸連通塊邊界。
+4. 依文字證據差異數排序，並標示小型連通塊。
+5. 使用者只修改連通塊的尺寸與規格。
+6. `ConnectivityReviewService` 將修正值回寫至受連通塊控制的元件。
+7. Gauge 與 Gauge Gasket 維持 `1/4"`；Hose 維持長度文字規則。
+8. R.Tee、Union R.Tee 與 VCR R.Tee 改由 `Reducer類` 統一處理，不再固定為 `Xx1/4"`。
+9. Reducer類可連接任意多個方向，但所有方向必須剛好歸納為兩種尺寸，最終尺寸為這兩種尺寸的標準化組合。
